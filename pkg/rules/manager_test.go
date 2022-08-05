@@ -6,7 +6,6 @@ package rules
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,16 +14,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
+	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/prometheus/pkg/exemplar"
-	"github.com/prometheus/prometheus/pkg/labels"
+	"github.com/prometheus/prometheus/model/exemplar"
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/rules"
 	"github.com/prometheus/prometheus/storage"
-	"github.com/thanos-io/thanos/pkg/extprom"
 	"gopkg.in/yaml.v3"
 
+	"github.com/thanos-io/thanos/pkg/extprom"
+	"github.com/thanos-io/thanos/pkg/runutil"
 	"github.com/thanos-io/thanos/pkg/store/storepb"
 	"github.com/thanos-io/thanos/pkg/testutil"
 )
@@ -35,8 +36,10 @@ func (n nopAppendable) Appender(_ context.Context) storage.Appender { return nop
 
 type nopAppender struct{}
 
-func (n nopAppender) Append(uint64, labels.Labels, int64, float64) (uint64, error) { return 0, nil }
-func (n nopAppender) AppendExemplar(uint64, labels.Labels, exemplar.Exemplar) (uint64, error) {
+func (n nopAppender) Append(storage.SeriesRef, labels.Labels, int64, float64) (storage.SeriesRef, error) {
+	return 0, nil
+}
+func (n nopAppender) AppendExemplar(storage.SeriesRef, labels.Labels, exemplar.Exemplar) (storage.SeriesRef, error) {
 	return 0, nil
 }
 func (n nopAppender) Commit() error                                        { return nil }
@@ -51,11 +54,11 @@ func (n nopQueryable) Querier(_ context.Context, _, _ int64) (storage.Querier, e
 
 // Regression test against https://github.com/thanos-io/thanos/issues/1779.
 func TestRun_Subqueries(t *testing.T) {
-	dir, err := ioutil.TempDir("", "test_rule_run")
+	dir, err := os.MkdirTemp("", "test_rule_run")
 	testutil.Ok(t, err)
 	defer func() { testutil.Ok(t, os.RemoveAll(dir)) }()
 
-	testutil.Ok(t, ioutil.WriteFile(filepath.Join(dir, "rule.yaml"), []byte(`
+	testutil.Ok(t, os.WriteFile(filepath.Join(dir, "rule.yaml"), []byte(`
 groups:
 - name: "rule with subquery"
   partial_response_strategy: "warn"
@@ -89,6 +92,7 @@ groups:
 			}
 		},
 		labels.FromStrings("replica", "1"),
+		"http://localhost",
 	)
 	testutil.Ok(t, thanosRuleMgr.Update(1*time.Second, []string{filepath.Join(dir, "rule.yaml")}))
 
@@ -104,9 +108,9 @@ groups:
 }
 
 func TestUpdate_Error_UpdatePartial(t *testing.T) {
-	dir, err := ioutil.TempDir("", "test_rule_rule_groups")
+	dir, err := os.MkdirTemp("", "test_rule_rule_groups")
 	testutil.Ok(t, err)
-	dataDir, err := ioutil.TempDir("", "test_rule_data")
+	dataDir, err := os.MkdirTemp("", "test_rule_data")
 	testutil.Ok(t, err)
 	defer func() {
 		testutil.Ok(t, os.RemoveAll(dir))
@@ -115,14 +119,14 @@ func TestUpdate_Error_UpdatePartial(t *testing.T) {
 	err = os.MkdirAll(filepath.Join(dir, "subdir"), 0775)
 	testutil.Ok(t, err)
 
-	testutil.Ok(t, ioutil.WriteFile(filepath.Join(dir, "no_strategy.yaml"), []byte(`
+	testutil.Ok(t, os.WriteFile(filepath.Join(dir, "no_strategy.yaml"), []byte(`
 groups:
 - name: "something1"
   rules:
   - alert: "some"
     expr: "up"
 `), os.ModePerm))
-	testutil.Ok(t, ioutil.WriteFile(filepath.Join(dir, "abort.yaml"), []byte(`
+	testutil.Ok(t, os.WriteFile(filepath.Join(dir, "abort.yaml"), []byte(`
 groups:
 - name: "something2"
   partial_response_strategy: "abort"
@@ -130,7 +134,7 @@ groups:
   - alert: "some"
     expr: "up"
 `), os.ModePerm))
-	testutil.Ok(t, ioutil.WriteFile(filepath.Join(dir, "warn.yaml"), []byte(`
+	testutil.Ok(t, os.WriteFile(filepath.Join(dir, "warn.yaml"), []byte(`
 groups:
 - name: "something3"
   partial_response_strategy: "warn"
@@ -138,7 +142,7 @@ groups:
   - alert: "some"
     expr: "up"
 `), os.ModePerm))
-	testutil.Ok(t, ioutil.WriteFile(filepath.Join(dir, "wrong.yaml"), []byte(`
+	testutil.Ok(t, os.WriteFile(filepath.Join(dir, "wrong.yaml"), []byte(`
 groups:
 - name: "something4"
   partial_response_strategy: "afafsdgsdgs" # Err 1
@@ -146,7 +150,7 @@ groups:
   - alert: "some"
     expr: "up"
 `), os.ModePerm))
-	testutil.Ok(t, ioutil.WriteFile(filepath.Join(dir, "combined.yaml"), []byte(`
+	testutil.Ok(t, os.WriteFile(filepath.Join(dir, "combined.yaml"), []byte(`
 groups:
 - name: "something5"
   partial_response_strategy: "warn"
@@ -164,7 +168,7 @@ groups:
     expr: "up"
 `), os.ModePerm))
 	// Same filename as the first rule file but different path.
-	testutil.Ok(t, ioutil.WriteFile(filepath.Join(dir, "subdir", "no_strategy.yaml"), []byte(`
+	testutil.Ok(t, os.WriteFile(filepath.Join(dir, "subdir", "no_strategy.yaml"), []byte(`
 groups:
 - name: "something8"
   rules:
@@ -187,6 +191,7 @@ groups:
 			}
 		},
 		labels.FromStrings("replica", "1"),
+		"http://localhost",
 	)
 	err = thanosRuleMgr.Update(10*time.Second, []string{
 		filepath.Join(dir, "no_strategy.yaml"),
@@ -291,6 +296,7 @@ func TestConfigRuleAdapterUnmarshalMarshalYAML(t *testing.T) {
   - alert: some
     expr: up
   partial_response_strategy: ABORT
+  limit: 10
 - name: something2
   rules:
   - alert: some
@@ -300,7 +306,8 @@ func TestConfigRuleAdapterUnmarshalMarshalYAML(t *testing.T) {
 	b, err := yaml.Marshal(c)
 	testutil.Ok(t, err)
 	testutil.Equals(t, `groups:
-    - name: something1
+    - limit: 10
+      name: something1
       rules:
         - alert: some
           expr: up
@@ -312,7 +319,7 @@ func TestConfigRuleAdapterUnmarshalMarshalYAML(t *testing.T) {
 }
 
 func TestManager_Rules(t *testing.T) {
-	dir, err := ioutil.TempDir("", "test_rule_run")
+	dir, err := os.MkdirTemp("", "test_rule_run")
 	testutil.Ok(t, err)
 	defer func() { testutil.Ok(t, os.RemoveAll(dir)) }()
 
@@ -333,6 +340,7 @@ func TestManager_Rules(t *testing.T) {
 			}
 		},
 		labels.FromStrings("replica", "test1"),
+		"http://localhost",
 	)
 	testutil.Ok(t, thanosRuleMgr.Update(60*time.Second, []string{
 		filepath.Join(curr, "../../examples/alerts/alerts.yaml"),
@@ -348,11 +356,11 @@ func TestManager_Rules(t *testing.T) {
 }
 
 func TestManagerUpdateWithNoRules(t *testing.T) {
-	dir, err := ioutil.TempDir("", "test_rule_rule_groups")
+	dir, err := os.MkdirTemp("", "test_rule_rule_groups")
 	testutil.Ok(t, err)
 	defer func() { testutil.Ok(t, os.RemoveAll(dir)) }()
 
-	testutil.Ok(t, ioutil.WriteFile(filepath.Join(dir, "no_strategy.yaml"), []byte(`
+	testutil.Ok(t, os.WriteFile(filepath.Join(dir, "no_strategy.yaml"), []byte(`
 groups:
 - name: "something1"
   rules:
@@ -374,14 +382,13 @@ groups:
 			}
 		},
 		nil,
+		"http://localhost",
 	)
 
 	// We need to run the underlying rule managers to update them more than
 	// once (otherwise there's a deadlock).
 	thanosRuleMgr.Run()
-	defer func() {
-		thanosRuleMgr.Stop()
-	}()
+	t.Cleanup(thanosRuleMgr.Stop)
 
 	err = thanosRuleMgr.Update(1*time.Second, []string{
 		filepath.Join(dir, "no_strategy.yaml"),
@@ -392,4 +399,61 @@ groups:
 	err = thanosRuleMgr.Update(1*time.Second, []string{})
 	testutil.Ok(t, err)
 	testutil.Equals(t, 0, len(thanosRuleMgr.RuleGroups()))
+}
+
+func TestManagerRunRulesWithRuleGroupLimit(t *testing.T) {
+	dir, err := os.MkdirTemp("", "test_rule_rule_groups")
+	testutil.Ok(t, err)
+	t.Cleanup(func() { testutil.Ok(t, os.RemoveAll(dir)) })
+	filename := filepath.Join(dir, "with_limit.yaml")
+	testutil.Ok(t, os.WriteFile(filename, []byte(`
+groups:
+- name: "something1"
+  interval: 1ms
+  limit: 1
+  rules:
+  - alert: "some"
+    expr: "up>0"
+    for: 0s
+`), os.ModePerm))
+
+	thanosRuleMgr := NewManager(
+		context.Background(),
+		nil,
+		dir,
+		rules.ManagerOptions{
+			Logger:    log.NewLogfmtLogger(os.Stderr),
+			Queryable: nopQueryable{},
+		},
+		func(partialResponseStrategy storepb.PartialResponseStrategy) rules.QueryFunc {
+			return func(ctx context.Context, q string, ts time.Time) (promql.Vector, error) {
+				return []promql.Sample{
+					{
+						Point:  promql.Point{T: 0, V: 1},
+						Metric: labels.FromStrings("foo", "bar"),
+					},
+					{
+						Point:  promql.Point{T: 0, V: 1},
+						Metric: labels.FromStrings("foo1", "bar1"),
+					},
+				}, nil
+			}
+		},
+		nil,
+		"http://localhost",
+	)
+	thanosRuleMgr.Run()
+	t.Cleanup(thanosRuleMgr.Stop)
+	testutil.Ok(t, thanosRuleMgr.Update(time.Millisecond, []string{filename}))
+	testutil.Equals(t, 1, len(thanosRuleMgr.protoRuleGroups()))
+	testutil.Equals(t, 1, len(thanosRuleMgr.protoRuleGroups()[0].Rules))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	testutil.Ok(t, runutil.Retry(time.Millisecond, ctx.Done(), func() error {
+		if thanosRuleMgr.protoRuleGroups()[0].Rules[0].GetAlert().Health != string(rules.HealthBad) {
+			return errors.New("expect HealthBad")
+		}
+		return nil
+	}))
+	testutil.Equals(t, "exceeded limit of 1 with 2 alerts", thanosRuleMgr.protoRuleGroups()[0].Rules[0].GetAlert().LastError)
 }

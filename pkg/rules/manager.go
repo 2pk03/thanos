@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,8 +17,8 @@ import (
 	"github.com/gogo/protobuf/proto"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/prometheus/pkg/labels"
-	"github.com/prometheus/prometheus/pkg/rulefmt"
+	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/model/rulefmt"
 	"github.com/prometheus/prometheus/rules"
 	"gopkg.in/yaml.v3"
 
@@ -44,6 +43,7 @@ func (g Group) toProto() *rulespb.RuleGroup {
 		Name:                    g.Name(),
 		File:                    g.OriginalFile,
 		Interval:                g.Interval().Seconds(),
+		Limit:                   int64(g.Limit()),
 		PartialResponseStrategy: g.PartialResponseStrategy,
 		// UTC needed due to https://github.com/gogo/protobuf/issues/519.
 		LastEvaluation:            g.GetLastEvaluation().UTC(),
@@ -116,8 +116,9 @@ type Manager struct {
 	mgrs    map[storepb.PartialResponseStrategy]*rules.Manager
 	extLset labels.Labels
 
-	mtx       sync.RWMutex
-	ruleFiles map[string]string
+	mtx         sync.RWMutex
+	ruleFiles   map[string]string
+	externalURL string
 }
 
 // NewManager creates new Manager.
@@ -129,12 +130,14 @@ func NewManager(
 	baseOpts rules.ManagerOptions,
 	queryFuncCreator func(partialResponseStrategy storepb.PartialResponseStrategy) rules.QueryFunc,
 	extLset labels.Labels,
+	externalURL string,
 ) *Manager {
 	m := &Manager{
-		workDir:   filepath.Join(dataDir, tmpRuleDir),
-		mgrs:      make(map[storepb.PartialResponseStrategy]*rules.Manager),
-		extLset:   extLset,
-		ruleFiles: make(map[string]string),
+		workDir:     filepath.Join(dataDir, tmpRuleDir),
+		mgrs:        make(map[storepb.PartialResponseStrategy]*rules.Manager),
+		extLset:     extLset,
+		ruleFiles:   make(map[string]string),
+		externalURL: externalURL,
 	}
 	for _, strategy := range storepb.PartialResponseStrategy_value {
 		s := storepb.PartialResponseStrategy(strategy)
@@ -329,7 +332,7 @@ func (m *Manager) Update(evalInterval time.Duration, files []string) error {
 	}
 
 	for _, fn := range files {
-		b, err := ioutil.ReadFile(filepath.Clean(fn))
+		b, err := os.ReadFile(filepath.Clean(fn))
 		if err != nil {
 			errs.Add(err)
 			continue
@@ -361,7 +364,7 @@ func (m *Manager) Update(evalInterval time.Duration, files []string) error {
 				errs.Add(errors.Wrapf(err, "create %s", filepath.Dir(newFn)))
 				continue
 			}
-			if err := ioutil.WriteFile(newFn, b, os.ModePerm); err != nil {
+			if err := os.WriteFile(newFn, b, os.ModePerm); err != nil {
 				errs.Add(errors.Wrapf(err, "write file %v", newFn))
 				continue
 			}
@@ -378,7 +381,7 @@ func (m *Manager) Update(evalInterval time.Duration, files []string) error {
 			continue
 		}
 		// We add external labels in `pkg/alert.Queue`.
-		if err := mgr.Update(evalInterval, fs, nil); err != nil {
+		if err := mgr.Update(evalInterval, fs, m.extLset, m.externalURL, nil); err != nil {
 			// TODO(bwplotka): Prometheus logs all error details. Fix it upstream to have consistent error handling.
 			errs.Add(errors.Wrapf(err, "strategy %s, update rules", s))
 			continue

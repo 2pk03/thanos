@@ -21,29 +21,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/common/route"
-	promgate "github.com/prometheus/prometheus/pkg/gate"
-	"github.com/prometheus/prometheus/pkg/labels"
-	"github.com/prometheus/prometheus/pkg/timestamp"
+	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/model/timestamp"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/promql/parser"
 	"github.com/prometheus/prometheus/rules"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/tsdbutil"
+	promgate "github.com/prometheus/prometheus/util/gate"
 	"github.com/prometheus/prometheus/util/stats"
 
 	"github.com/thanos-io/thanos/pkg/compact"
@@ -611,6 +611,7 @@ func TestQueryEndpoints(t *testing.T) {
 		}
 	}
 
+	qs := &stats.BuiltinStats{}
 	tests = []endpointTestCase{
 		{
 			endpoint: api.query,
@@ -628,7 +629,7 @@ func TestQueryEndpoints(t *testing.T) {
 				"stats": []string{"true"},
 			},
 			response: &queryData{
-				Stats: &stats.QueryStats{},
+				Stats: qs,
 			},
 		},
 	}
@@ -679,7 +680,7 @@ func TestMetadataEndpoints(t *testing.T) {
 		},
 	}
 
-	dir, err := ioutil.TempDir("", "prometheus-test")
+	dir, err := os.MkdirTemp("", "prometheus-test")
 	testutil.Ok(t, err)
 
 	const chunkRange int64 = 600_000
@@ -703,7 +704,7 @@ func TestMetadataEndpoints(t *testing.T) {
 
 	opts := tsdb.DefaultOptions()
 	opts.RetentionDuration = math.MaxInt64
-	db, err := tsdb.Open(dir, nil, nil, opts)
+	db, err := tsdb.Open(dir, nil, nil, opts, nil)
 	defer func() { testutil.Ok(t, db.Close()) }()
 	testutil.Ok(t, err)
 
@@ -1201,6 +1202,93 @@ func TestMetadataEndpoints(t *testing.T) {
 	}
 }
 
+func TestStoresEndpoint(t *testing.T) {
+	apiWithNotEndpoints := &QueryAPI{
+		endpointStatus: func() []query.EndpointStatus {
+			return []query.EndpointStatus{}
+		},
+	}
+	apiWithValidEndpoints := &QueryAPI{
+		endpointStatus: func() []query.EndpointStatus {
+			return []query.EndpointStatus{
+				{
+					Name:          "endpoint-1",
+					ComponentType: component.Store,
+				},
+				{
+					Name:          "endpoint-2",
+					ComponentType: component.Store,
+				},
+				{
+					Name:          "endpoint-3",
+					ComponentType: component.Sidecar,
+				},
+			}
+		},
+	}
+	apiWithInvalidEndpoint := &QueryAPI{
+		endpointStatus: func() []query.EndpointStatus {
+			return []query.EndpointStatus{
+				{
+					Name:          "endpoint-1",
+					ComponentType: component.Store,
+				},
+				{
+					Name: "endpoint-2",
+				},
+			}
+		},
+	}
+
+	testCases := []endpointTestCase{
+		{
+			endpoint: apiWithNotEndpoints.stores,
+			method:   http.MethodGet,
+			response: map[string][]query.EndpointStatus{},
+		},
+		{
+			endpoint: apiWithValidEndpoints.stores,
+			method:   http.MethodGet,
+			response: map[string][]query.EndpointStatus{
+				"store": {
+					{
+						Name:          "endpoint-1",
+						ComponentType: component.Store,
+					},
+					{
+						Name:          "endpoint-2",
+						ComponentType: component.Store,
+					},
+				},
+				"sidecar": {
+					{
+						Name:          "endpoint-3",
+						ComponentType: component.Sidecar,
+					},
+				},
+			},
+		},
+		{
+			endpoint: apiWithInvalidEndpoint.stores,
+			method:   http.MethodGet,
+			response: map[string][]query.EndpointStatus{
+				"store": {
+					{
+						Name:          "endpoint-1",
+						ComponentType: component.Store,
+					},
+				},
+			},
+		},
+	}
+
+	for i, test := range testCases {
+		if ok := testEndpoint(t, test, strings.TrimSpace(fmt.Sprintf("#%d %s", i, test.query.Encode())), reflect.DeepEqual); !ok {
+			return
+		}
+	}
+}
+
 func TestParseTime(t *testing.T) {
 	ts, err := time.Parse(time.RFC3339Nano, "2015-06-03T13:21:58.555Z")
 	if err != nil {
@@ -1626,7 +1714,7 @@ func TestRulesHandler(t *testing.T) {
 			Type:           "alerting",
 		},
 	}
-	var tests = []test{
+	for _, test := range []test{
 		{
 			response: &testpromcompatibility.RuleDiscovery{
 				RuleGroups: []*testpromcompatibility.RuleGroup{
@@ -1683,9 +1771,7 @@ func TestRulesHandler(t *testing.T) {
 				},
 			},
 		},
-	}
-
-	for _, test := range tests {
+	} {
 		t.Run(fmt.Sprintf("endpoint=%s/method=%s/query=%q", "rules", http.MethodGet, test.query.Encode()), func(t *testing.T) {
 			// Build a context with the correct request params.
 			ctx := context.Background()

@@ -5,13 +5,14 @@ package labelpb
 
 import (
 	"fmt"
-	ioutil "io/ioutil"
+	"io"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
 
-	"github.com/prometheus/prometheus/pkg/labels"
+	"github.com/prometheus/prometheus/model/labels"
+
 	"github.com/thanos-io/thanos/pkg/testutil"
 )
 
@@ -126,7 +127,7 @@ func testInjectExtLabels(tb testutil.TB) {
 			), x)
 		}
 	}
-	fmt.Fprint(ioutil.Discard, x)
+	fmt.Fprint(io.Discard, x)
 }
 
 var (

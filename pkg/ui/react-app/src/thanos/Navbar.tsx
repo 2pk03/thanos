@@ -34,9 +34,9 @@ const navConfig: { [component: string]: (NavConfig | NavDropDown)[] } = {
       children: [
         { name: 'Runtime & Build Information', uri: '/status' },
         { name: 'Command-Line Flags', uri: '/flags' },
-        // TODO(onprem): Uncomment after `--target` flag on Querier becomes
-        // non-hidden or we move to `--endpoint`.
-        // { name: 'Targets', uri: '/targets' },
+        { name: 'Alerts', uri: '/alerts' },
+        { name: 'Targets', uri: '/targets' },
+        { name: 'Rules', uri: '/rules' },
       ],
     },
   ],
@@ -84,14 +84,6 @@ const navConfig: { [component: string]: (NavConfig | NavDropDown)[] } = {
   ],
 };
 
-const defaultClassicUIRoute: { [component: string]: string } = {
-  query: '/classic/graph',
-  rule: '/classic/alerts',
-  bucket: '/classic',
-  compact: '/classic/loaded',
-  store: '/classic/loaded',
-};
-
 interface NavigationProps {
   thanosComponent: string;
   defaultRoute: string;
@@ -136,11 +128,6 @@ const Navigation: FC<PathPrefixProps & NavigationProps> = ({ pathPrefix, thanosC
           })}
           <NavItem>
             <NavLink href="https://thanos.io/tip/thanos/getting-started.md/">Help</NavLink>
-          </NavItem>
-          <NavItem>
-            <NavLink href={`${pathPrefix}${defaultClassicUIRoute[thanosComponent]}${window.location.search}`}>
-              Classic UI
-            </NavLink>
           </NavItem>
         </Nav>
       </Collapse>

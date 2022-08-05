@@ -6,8 +6,10 @@ package extkingpin
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	extflag "github.com/efficientgo/tools/extkingpin"
+	"github.com/pkg/errors"
 	"github.com/prometheus/common/model"
 	"gopkg.in/alecthomas/kingpin.v2"
 )
@@ -19,6 +21,58 @@ func ModelDuration(flags *kingpin.FlagClause) *model.Duration {
 	return value
 }
 
+// Custom parser for IP address flags.
+type addressSlice []string
+
+// addressSlice conforms to flag.Value interface.
+func (a *addressSlice) Set(value string) error {
+	*a = append(*a, value)
+	if err := validateAddrs(*a); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (a *addressSlice) String() string {
+	return strings.Join(*a, ",")
+}
+
+// Ensure flag is repeatable.
+func (a *addressSlice) IsCumulative() bool {
+	return true
+}
+
+func Addrs(flags *kingpin.FlagClause) (target *addressSlice) {
+	target = &addressSlice{}
+	flags.SetValue((*addressSlice)(target))
+	return
+}
+
+// validateAddrs checks an address slice for duplicates and empty or invalid elements.
+func validateAddrs(addrs addressSlice) error {
+	set := map[string]struct{}{}
+
+	for _, addr := range addrs {
+		if addr == "" {
+			return errors.New("Address is empty.")
+		}
+
+		qtypeAndName := strings.SplitN(addr, "+", 2)
+		hostAndPort := strings.SplitN(addr, ":", 2)
+		if len(qtypeAndName) != 2 && len(hostAndPort) != 2 {
+			return errors.Errorf("Address %s is not of <host>:<port> format or a valid DNS query.", addr)
+		}
+
+		if _, ok := set[addr]; ok {
+			return errors.Errorf("Address %s is duplicated.", addr)
+		}
+
+		set[addr] = struct{}{}
+	}
+
+	return nil
+}
+
 // RegisterGRPCFlags registers flags commonly used to configure gRPC servers with.
 func RegisterGRPCFlags(cmd FlagClause) (
 	grpcBindAddr *string,
@@ -26,6 +80,7 @@ func RegisterGRPCFlags(cmd FlagClause) (
 	grpcTLSSrvCert *string,
 	grpcTLSSrvKey *string,
 	grpcTLSSrvClientCA *string,
+	grpcMaxConnectionAge *time.Duration,
 ) {
 	grpcBindAddr = cmd.Flag("grpc-address", "Listen ip:port address for gRPC endpoints (StoreAPI). Make sure this address is routable from other components.").
 		Default("0.0.0.0:10901").String()
@@ -34,12 +89,14 @@ func RegisterGRPCFlags(cmd FlagClause) (
 	grpcTLSSrvCert = cmd.Flag("grpc-server-tls-cert", "TLS Certificate for gRPC server, leave blank to disable TLS").Default("").String()
 	grpcTLSSrvKey = cmd.Flag("grpc-server-tls-key", "TLS Key for the gRPC server, leave blank to disable TLS").Default("").String()
 	grpcTLSSrvClientCA = cmd.Flag("grpc-server-tls-client-ca", "TLS CA to verify clients against. If no client CA is specified, there is no client verification on server side. (tls.NoClientCert)").Default("").String()
+	grpcMaxConnectionAge = cmd.Flag("grpc-server-max-connection-age", "The grpc server max connection age. This controls how often to re-read the tls certificates and redo the TLS handshake ").Default("60m").Duration()
 
 	return grpcBindAddr,
 		grpcGracePeriod,
 		grpcTLSSrvCert,
 		grpcTLSSrvKey,
-		grpcTLSSrvClientCA
+		grpcTLSSrvClientCA,
+		grpcMaxConnectionAge
 }
 
 // RegisterCommonObjStoreFlags register flags commonly used to configure http servers with.
@@ -79,8 +136,7 @@ func RegisterRequestLoggingFlags(app FlagClause) *extflag.PathOrContent {
 	return extflag.RegisterPathOrContent(
 		app,
 		"request.logging-config",
-		// TODO @yashrsharma44: Change the link with the documented link for yaml configuration.
-		"YAML file with request logging configuration. See format details: https://gist.github.com/yashrsharma44/02f5765c5710dd09ce5d14e854f22825",
+		"YAML file with request logging configuration. See format details: https://thanos.io/tip/thanos/logging.md/#configuration",
 		extflag.WithEnvSubstitution(),
 	)
 }

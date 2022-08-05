@@ -12,32 +12,33 @@ import (
 	"strings"
 
 	"github.com/fatih/structtag"
-	"github.com/go-kit/kit/log"
-	"github.com/go-kit/kit/log/level"
+	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 	"github.com/pkg/errors"
-	"github.com/thanos-io/thanos/pkg/query"
+	"github.com/thanos-io/objstore/client"
+	"github.com/thanos-io/objstore/providers/azure"
+	"github.com/thanos-io/objstore/providers/bos"
+	"github.com/thanos-io/objstore/providers/cos"
+	"github.com/thanos-io/objstore/providers/filesystem"
+	"github.com/thanos-io/objstore/providers/gcs"
+	"github.com/thanos-io/objstore/providers/oss"
+	"github.com/thanos-io/objstore/providers/s3"
+	"github.com/thanos-io/objstore/providers/swift"
 	"gopkg.in/alecthomas/kingpin.v2"
 	"gopkg.in/yaml.v2"
 
+	"github.com/thanos-io/thanos/pkg/httpconfig"
+
 	"github.com/thanos-io/thanos/pkg/alert"
 	"github.com/thanos-io/thanos/pkg/cacheutil"
-	http_util "github.com/thanos-io/thanos/pkg/http"
 	"github.com/thanos-io/thanos/pkg/logging"
-	"github.com/thanos-io/thanos/pkg/objstore/azure"
-	"github.com/thanos-io/thanos/pkg/objstore/client"
-	"github.com/thanos-io/thanos/pkg/objstore/cos"
-	"github.com/thanos-io/thanos/pkg/objstore/filesystem"
-	"github.com/thanos-io/thanos/pkg/objstore/gcs"
-	"github.com/thanos-io/thanos/pkg/objstore/oss"
-	"github.com/thanos-io/thanos/pkg/objstore/s3"
-	"github.com/thanos-io/thanos/pkg/objstore/swift"
 	"github.com/thanos-io/thanos/pkg/queryfrontend"
 	storecache "github.com/thanos-io/thanos/pkg/store/cache"
 	trclient "github.com/thanos-io/thanos/pkg/tracing/client"
 	"github.com/thanos-io/thanos/pkg/tracing/elasticapm"
+	"github.com/thanos-io/thanos/pkg/tracing/google_cloud"
 	"github.com/thanos-io/thanos/pkg/tracing/jaeger"
 	"github.com/thanos-io/thanos/pkg/tracing/lightstep"
-	"github.com/thanos-io/thanos/pkg/tracing/stackdriver"
 )
 
 var (
@@ -52,22 +53,25 @@ var (
 		client.COS:        cos.DefaultConfig,
 		client.ALIYUNOSS:  oss.Config{},
 		client.FILESYSTEM: filesystem.Config{},
+		client.BOS:        bos.Config{},
 	}
 
 	tracingConfigs = map[trclient.TracingProvider]interface{}{
-		trclient.JAEGER:      jaeger.Config{},
-		trclient.STACKDRIVER: stackdriver.Config{},
-		trclient.ELASTIC_APM: elasticapm.Config{},
-		trclient.LIGHTSTEP:   lightstep.Config{},
+		trclient.Jaeger:      jaeger.Config{},
+		trclient.GoogleCloud: google_cloud.Config{},
+		trclient.ElasticAPM:  elasticapm.Config{},
+		trclient.Lightstep:   lightstep.Config{},
 	}
 	indexCacheConfigs = map[storecache.IndexCacheProvider]interface{}{
 		storecache.INMEMORY:  storecache.InMemoryIndexCacheConfig{},
 		storecache.MEMCACHED: cacheutil.MemcachedClientConfig{},
+		storecache.REDIS:     cacheutil.DefaultRedisClientConfig,
 	}
 
 	queryfrontendCacheConfigs = map[queryfrontend.ResponseCacheProvider]interface{}{
 		queryfrontend.INMEMORY:  queryfrontend.InMemoryResponseCacheConfig{},
 		queryfrontend.MEMCACHED: queryfrontend.MemcachedResponseCacheConfig{},
+		queryfrontend.REDIS:     queryfrontend.DefaultRedisConfig,
 	}
 )
 
@@ -76,12 +80,12 @@ func init() {
 	configs[name(logging.RequestConfig{})] = logging.RequestConfig{}
 
 	alertmgrCfg := alert.DefaultAlertmanagerConfig()
-	alertmgrCfg.EndpointsConfig.FileSDConfigs = []http_util.FileSDConfig{{}}
+	alertmgrCfg.EndpointsConfig.FileSDConfigs = []httpconfig.FileSDConfig{{}}
 	configs[name(alert.AlertingConfig{})] = alert.AlertingConfig{Alertmanagers: []alert.AlertmanagerConfig{alertmgrCfg}}
 
-	queryCfg := query.DefaultConfig()
-	queryCfg.EndpointsConfig.FileSDConfigs = []http_util.FileSDConfig{{}}
-	configs[name(query.Config{})] = []query.Config{queryCfg}
+	queryCfg := httpconfig.DefaultConfig()
+	queryCfg.EndpointsConfig.FileSDConfigs = []httpconfig.FileSDConfig{{}}
+	configs[name(httpconfig.Config{})] = []httpconfig.Config{queryCfg}
 
 	for typ, config := range bucketConfigs {
 		configs[name(config)] = client.BucketConfig{Type: typ, Config: config}

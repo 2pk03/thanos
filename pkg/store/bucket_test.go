@@ -9,7 +9,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"math/rand"
 	"os"
@@ -22,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	"github.com/gogo/protobuf/proto"
 	"github.com/gogo/protobuf/types"
 	"github.com/leanovate/gopter"
@@ -30,13 +29,16 @@ import (
 	"github.com/leanovate/gopter/prop"
 	"github.com/oklog/ulid"
 	promtest "github.com/prometheus/client_golang/prometheus/testutil"
-	"github.com/prometheus/prometheus/pkg/labels"
-	"github.com/prometheus/prometheus/pkg/relabel"
+	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/model/relabel"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/prometheus/tsdb/encoding"
+	"github.com/thanos-io/objstore/providers/filesystem"
 	"go.uber.org/atomic"
+
+	"github.com/thanos-io/objstore"
 
 	"github.com/thanos-io/thanos/pkg/block"
 	"github.com/thanos-io/thanos/pkg/block/indexheader"
@@ -44,8 +46,6 @@ import (
 	"github.com/thanos-io/thanos/pkg/compact"
 	"github.com/thanos-io/thanos/pkg/compact/downsample"
 	"github.com/thanos-io/thanos/pkg/gate"
-	"github.com/thanos-io/thanos/pkg/objstore"
-	"github.com/thanos-io/thanos/pkg/objstore/filesystem"
 	"github.com/thanos-io/thanos/pkg/pool"
 	storecache "github.com/thanos-io/thanos/pkg/store/cache"
 	"github.com/thanos-io/thanos/pkg/store/hintspb"
@@ -191,7 +191,7 @@ func TestBucketBlock_Property(t *testing.T) {
 func TestBucketBlock_matchLabels(t *testing.T) {
 	defer testutil.TolerantVerifyLeak(t)
 
-	dir, err := ioutil.TempDir("", "bucketblock-test")
+	dir, err := os.MkdirTemp("", "bucketblock-test")
 	testutil.Ok(t, err)
 	defer testutil.Ok(t, os.RemoveAll(dir))
 
@@ -556,13 +556,39 @@ func TestGapBasedPartitioner_Partition(t *testing.T) {
 	}
 }
 
+func TestBucketStoreConfig_validate(t *testing.T) {
+	tests := map[string]struct {
+		config   *BucketStore
+		expected error
+	}{
+		"should pass on valid config": {
+			config: &BucketStore{
+				blockSyncConcurrency: 1,
+			},
+			expected: nil,
+		},
+		"should fail on blockSyncConcurrency < 1": {
+			config: &BucketStore{
+				blockSyncConcurrency: 0,
+			},
+			expected: errBlockSyncConcurrencyNotValid,
+		},
+	}
+
+	for testName, testData := range tests {
+		t.Run(testName, func(t *testing.T) {
+			testutil.Equals(t, testData.expected, testData.config.validate())
+		})
+	}
+}
+
 func TestBucketStore_Info(t *testing.T) {
 	defer testutil.TolerantVerifyLeak(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	dir, err := ioutil.TempDir("", "bucketstore-test")
+	dir, err := os.MkdirTemp("", "bucketstore-test")
 	testutil.Ok(t, err)
 
 	defer testutil.Ok(t, os.RemoveAll(dir))
@@ -627,7 +653,7 @@ func TestBucketStore_Sharding(t *testing.T) {
 	ctx := context.Background()
 	logger := log.NewNopLogger()
 
-	dir, err := ioutil.TempDir("", "test-sharding-prepare")
+	dir, err := os.MkdirTemp("", "test-sharding-prepare")
 	testutil.Ok(t, err)
 	defer func() { testutil.Ok(t, os.RemoveAll(dir)) }()
 
@@ -656,7 +682,7 @@ func TestBucketStore_Sharding(t *testing.T) {
 		return
 	}
 
-	dir2, err := ioutil.TempDir("", "test-sharding2")
+	dir2, err := os.MkdirTemp("", "test-sharding2")
 	testutil.Ok(t, err)
 	defer func() { testutil.Ok(t, os.RemoveAll(dir2)) }()
 
@@ -804,7 +830,7 @@ func testSharding(t *testing.T, reuseDisk string, bkt objstore.Bucket, all ...ul
 
 			if dir == "" {
 				var err error
-				dir, err = ioutil.TempDir("", "test-sharding")
+				dir, err = os.MkdirTemp("", "test-sharding")
 				testutil.Ok(t, err)
 				defer func() { testutil.Ok(t, os.RemoveAll(dir)) }()
 			}
@@ -815,7 +841,7 @@ func testSharding(t *testing.T, reuseDisk string, bkt objstore.Bucket, all ...ul
 			metaFetcher, err := block.NewMetaFetcher(logger, 20, objstore.WithNoopInstr(bkt), dir, nil, []block.MetadataFilter{
 				block.NewTimePartitionMetaFilter(allowAllFilterConf.MinTime, allowAllFilterConf.MaxTime),
 				block.NewLabelShardedMetaFilter(relabelConf),
-			}, nil)
+			})
 			testutil.Ok(t, err)
 
 			bucketStore, err := NewBucketStore(
@@ -943,12 +969,12 @@ func TestReadIndexCache_LoadSeries(t *testing.T) {
 	r := bucketIndexReader{
 		block:        b,
 		stats:        &queryStats{},
-		loadedSeries: map[uint64][]byte{},
+		loadedSeries: map[storage.SeriesRef][]byte{},
 	}
 
 	// Success with no refetches.
-	testutil.Ok(t, r.loadSeries(context.TODO(), []uint64{2, 13, 24}, false, 2, 100))
-	testutil.Equals(t, map[uint64][]byte{
+	testutil.Ok(t, r.loadSeries(context.TODO(), []storage.SeriesRef{2, 13, 24}, false, 2, 100))
+	testutil.Equals(t, map[storage.SeriesRef][]byte{
 		2:  []byte("aaaaaaaaaa"),
 		13: []byte("bbbbbbbbbb"),
 		24: []byte("cccccccccc"),
@@ -956,9 +982,9 @@ func TestReadIndexCache_LoadSeries(t *testing.T) {
 	testutil.Equals(t, float64(0), promtest.ToFloat64(s.seriesRefetches))
 
 	// Success with 2 refetches.
-	r.loadedSeries = map[uint64][]byte{}
-	testutil.Ok(t, r.loadSeries(context.TODO(), []uint64{2, 13, 24}, false, 2, 15))
-	testutil.Equals(t, map[uint64][]byte{
+	r.loadedSeries = map[storage.SeriesRef][]byte{}
+	testutil.Ok(t, r.loadSeries(context.TODO(), []storage.SeriesRef{2, 13, 24}, false, 2, 15))
+	testutil.Equals(t, map[storage.SeriesRef][]byte{
 		2:  []byte("aaaaaaaaaa"),
 		13: []byte("bbbbbbbbbb"),
 		24: []byte("cccccccccc"),
@@ -966,9 +992,9 @@ func TestReadIndexCache_LoadSeries(t *testing.T) {
 	testutil.Equals(t, float64(2), promtest.ToFloat64(s.seriesRefetches))
 
 	// Success with refetch on first element.
-	r.loadedSeries = map[uint64][]byte{}
-	testutil.Ok(t, r.loadSeries(context.TODO(), []uint64{2}, false, 2, 5))
-	testutil.Equals(t, map[uint64][]byte{
+	r.loadedSeries = map[storage.SeriesRef][]byte{}
+	testutil.Ok(t, r.loadSeries(context.TODO(), []storage.SeriesRef{2}, false, 2, 5))
+	testutil.Equals(t, map[storage.SeriesRef][]byte{
 		2: []byte("aaaaaaaaaa"),
 	}, r.loadedSeries)
 	testutil.Equals(t, float64(3), promtest.ToFloat64(s.seriesRefetches))
@@ -981,13 +1007,13 @@ func TestReadIndexCache_LoadSeries(t *testing.T) {
 	testutil.Ok(t, bkt.Upload(context.Background(), filepath.Join(b.meta.ULID.String(), block.IndexFilename), bytes.NewReader(buf.Get())))
 
 	// Fail, but no recursion at least.
-	testutil.NotOk(t, r.loadSeries(context.TODO(), []uint64{2, 13, 24}, false, 1, 15))
+	testutil.NotOk(t, r.loadSeries(context.TODO(), []storage.SeriesRef{2, 13, 24}, false, 1, 15))
 }
 
 func TestBucketIndexReader_ExpandedPostings(t *testing.T) {
 	tb := testutil.NewTB(t)
 
-	tmpDir, err := ioutil.TempDir("", "test-expanded-postings")
+	tmpDir, err := os.MkdirTemp("", "test-expanded-postings")
 	testutil.Ok(tb, err)
 	defer func() { testutil.Ok(tb, os.RemoveAll(tmpDir)) }()
 
@@ -1006,7 +1032,7 @@ func TestBucketIndexReader_ExpandedPostings(t *testing.T) {
 func BenchmarkBucketIndexReader_ExpandedPostings(b *testing.B) {
 	tb := testutil.NewTB(b)
 
-	tmpDir, err := ioutil.TempDir("", "bench-expanded-postings")
+	tmpDir, err := os.MkdirTemp("", "bench-expanded-postings")
 	testutil.Ok(tb, err)
 	defer func() { testutil.Ok(tb, os.RemoveAll(tmpDir)) }()
 
@@ -1025,7 +1051,7 @@ func uploadTestBlock(t testing.TB, tmpDir string, bkt objstore.Bucket, series in
 	headOpts := tsdb.DefaultHeadOptions()
 	headOpts.ChunkDirRoot = tmpDir
 	headOpts.ChunkRange = 1000
-	h, err := tsdb.NewHead(nil, nil, nil, headOpts)
+	h, err := tsdb.NewHead(nil, nil, nil, headOpts, nil)
 	testutil.Ok(t, err)
 	defer func() {
 		testutil.Ok(t, h.Close())
@@ -1144,11 +1170,11 @@ func benchmarkExpandedPostings(
 				partitioner:       NewGapBasedPartitioner(PartitionerMaxGapSize),
 			}
 
-			indexr := newBucketIndexReader(context.Background(), b)
+			indexr := newBucketIndexReader(b)
 
 			t.ResetTimer()
 			for i := 0; i < t.N(); i++ {
-				p, err := indexr.ExpandedPostings(c.matchers)
+				p, err := indexr.ExpandedPostings(context.Background(), c.matchers)
 				testutil.Ok(t, err)
 				testutil.Equals(t, c.expectedLen, len(p))
 			}
@@ -1189,7 +1215,7 @@ func BenchmarkBucketSkipChunksSeries(b *testing.B) {
 func benchBucketSeries(t testutil.TB, skipChunk bool, samplesPerSeries, totalSeries int, requestedRatios ...float64) {
 	const numOfBlocks = 4
 
-	tmpDir, err := ioutil.TempDir("", "testorbench-bucketseries")
+	tmpDir, err := os.MkdirTemp("", "testorbench-bucketseries")
 	testutil.Ok(t, err)
 	defer func() { testutil.Ok(t, os.RemoveAll(tmpDir)) }()
 
@@ -1353,7 +1379,7 @@ func (m *mockedPool) Put(b *[]byte) {
 
 // Regression test against: https://github.com/thanos-io/thanos/issues/2147.
 func TestBucketSeries_OneBlock_InMemIndexCacheSegfault(t *testing.T) {
-	tmpDir, err := ioutil.TempDir("", "segfault-series")
+	tmpDir, err := os.MkdirTemp("", "segfault-series")
 	testutil.Ok(t, err)
 	defer func() { testutil.Ok(t, os.RemoveAll(tmpDir)) }()
 
@@ -1361,7 +1387,7 @@ func TestBucketSeries_OneBlock_InMemIndexCacheSegfault(t *testing.T) {
 	testutil.Ok(t, err)
 	defer func() { testutil.Ok(t, bkt.Close()) }()
 
-	logger := log.NewNopLogger()
+	logger := log.NewLogfmtLogger(os.Stderr)
 	thanosMeta := metadata.Thanos{
 		Labels:     labels.Labels{{Name: "ext1", Value: "1"}}.Map(),
 		Downsample: metadata.ThanosDownsample{Resolution: 0},
@@ -1391,7 +1417,7 @@ func TestBucketSeries_OneBlock_InMemIndexCacheSegfault(t *testing.T) {
 	// This allows to pick time range that will correspond to number of series picked 1:1.
 	{
 		// Block 1.
-		h, err := tsdb.NewHead(nil, nil, nil, headOpts)
+		h, err := tsdb.NewHead(nil, nil, nil, headOpts, nil)
 		testutil.Ok(t, err)
 		defer func() { testutil.Ok(t, h.Close()) }()
 
@@ -1430,7 +1456,7 @@ func TestBucketSeries_OneBlock_InMemIndexCacheSegfault(t *testing.T) {
 	var b2 *bucketBlock
 	{
 		// Block 2, do not load this block yet.
-		h, err := tsdb.NewHead(nil, nil, nil, headOpts)
+		h, err := tsdb.NewHead(nil, nil, nil, headOpts, nil)
 		testutil.Ok(t, err)
 		defer func() { testutil.Ok(t, h.Close()) }()
 
@@ -1470,7 +1496,7 @@ func TestBucketSeries_OneBlock_InMemIndexCacheSegfault(t *testing.T) {
 		bkt:             objstore.WithNoopInstr(bkt),
 		logger:          logger,
 		indexCache:      indexCache,
-		indexReaderPool: indexheader.NewReaderPool(log.NewNopLogger(), false, 0, nil),
+		indexReaderPool: indexheader.NewReaderPool(log.NewNopLogger(), false, 0, indexheader.NewReaderPoolMetrics(nil)),
 		metrics:         newBucketStoreMetrics(nil),
 		blockSets: map[uint64]*bucketBlockSet{
 			labels.Labels{{Name: "ext1", Value: "1"}}.Hash(): {blocks: [][]*bucketBlock{{b1, b2}}},
@@ -1604,7 +1630,7 @@ func TestSeries_RequestAndResponseHints(t *testing.T) {
 func TestSeries_ErrorUnmarshallingRequestHints(t *testing.T) {
 	tb := testutil.NewTB(t)
 
-	tmpDir, err := ioutil.TempDir("", "test-series-hints-enabled")
+	tmpDir, err := os.MkdirTemp("", "test-series-hints-enabled")
 	testutil.Ok(t, err)
 	defer func() { testutil.Ok(t, os.RemoveAll(tmpDir)) }()
 
@@ -1619,7 +1645,7 @@ func TestSeries_ErrorUnmarshallingRequestHints(t *testing.T) {
 	)
 
 	// Instance a real bucket store we'll use to query the series.
-	fetcher, err := block.NewMetaFetcher(logger, 10, instrBkt, tmpDir, nil, nil, nil)
+	fetcher, err := block.NewMetaFetcher(logger, 10, instrBkt, tmpDir, nil, nil)
 	testutil.Ok(tb, err)
 
 	indexCache, err := storecache.NewInMemoryIndexCacheWithConfig(logger, nil, storecache.InMemoryIndexCacheConfig{})
@@ -1665,7 +1691,7 @@ func TestSeries_ErrorUnmarshallingRequestHints(t *testing.T) {
 func TestSeries_BlockWithMultipleChunks(t *testing.T) {
 	tb := testutil.NewTB(t)
 
-	tmpDir, err := ioutil.TempDir("", "test-block-with-multiple-chunks")
+	tmpDir, err := os.MkdirTemp("", "test-block-with-multiple-chunks")
 	testutil.Ok(t, err)
 	defer func() { testutil.Ok(t, os.RemoveAll(tmpDir)) }()
 
@@ -1675,7 +1701,7 @@ func TestSeries_BlockWithMultipleChunks(t *testing.T) {
 	headOpts.ChunkDirRoot = filepath.Join(tmpDir, "block")
 	headOpts.ChunkRange = 10000000000
 
-	h, err := tsdb.NewHead(nil, nil, nil, headOpts)
+	h, err := tsdb.NewHead(nil, nil, nil, headOpts, nil)
 	testutil.Ok(t, err)
 	defer func() { testutil.Ok(t, h.Close()) }()
 
@@ -1711,7 +1737,7 @@ func TestSeries_BlockWithMultipleChunks(t *testing.T) {
 	testutil.Ok(t, block.Upload(context.Background(), logger, bkt, filepath.Join(headOpts.ChunkDirRoot, blk.String()), metadata.NoneFunc))
 
 	// Instance a real bucket store we'll use to query the series.
-	fetcher, err := block.NewMetaFetcher(logger, 10, instrBkt, tmpDir, nil, nil, nil)
+	fetcher, err := block.NewMetaFetcher(logger, 10, instrBkt, tmpDir, nil, nil)
 	testutil.Ok(tb, err)
 
 	indexCache, err := storecache.NewInMemoryIndexCacheWithConfig(logger, nil, storecache.InMemoryIndexCacheConfig{})
@@ -1822,7 +1848,7 @@ func createBlockWithOneSeriesWithStep(t testutil.TB, dir string, lbls labels.Lab
 	headOpts := tsdb.DefaultHeadOptions()
 	headOpts.ChunkDirRoot = dir
 	headOpts.ChunkRange = int64(totalSamples) * step
-	h, err := tsdb.NewHead(nil, nil, nil, headOpts)
+	h, err := tsdb.NewHead(nil, nil, nil, headOpts, nil)
 	testutil.Ok(t, err)
 	defer func() { testutil.Ok(t, h.Close()) }()
 
@@ -1845,7 +1871,7 @@ func setupStoreForHintsTest(t *testing.T) (testutil.TB, *BucketStore, []*storepb
 
 	closers := []func(){}
 
-	tmpDir, err := ioutil.TempDir("", "test-hints")
+	tmpDir, err := os.MkdirTemp("", "test-hints")
 	testutil.Ok(t, err)
 	closers = append(closers, func() { testutil.Ok(t, os.RemoveAll(tmpDir)) })
 
@@ -1894,7 +1920,7 @@ func setupStoreForHintsTest(t *testing.T) (testutil.TB, *BucketStore, []*storepb
 	}
 
 	// Instance a real bucket store we'll use to query back the series.
-	fetcher, err := block.NewMetaFetcher(logger, 10, instrBkt, tmpDir, nil, nil, nil)
+	fetcher, err := block.NewMetaFetcher(logger, 10, instrBkt, tmpDir, nil, nil)
 	testutil.Ok(tb, err)
 
 	indexCache, err := storecache.NewInMemoryIndexCacheWithConfig(logger, nil, storecache.InMemoryIndexCacheConfig{})
@@ -2094,7 +2120,7 @@ func BenchmarkBucketBlock_readChunkRange(b *testing.B) {
 		readLengths = []int64{300, 500, 1000, 5000, 10000, 30000, 50000, 100000, 300000, 1500000}
 	)
 
-	tmpDir, err := ioutil.TempDir("", "benchmark")
+	tmpDir, err := os.MkdirTemp("", "benchmark")
 	testutil.Ok(b, err)
 	b.Cleanup(func() {
 		testutil.Ok(b, os.RemoveAll(tmpDir))
@@ -2159,7 +2185,7 @@ func prepareBucket(b *testing.B, resolutionLevel compact.ResolutionLevel) (*buck
 		logger = log.NewNopLogger()
 	)
 
-	tmpDir, err := ioutil.TempDir("", "benchmark")
+	tmpDir, err := os.MkdirTemp("", "benchmark")
 	testutil.Ok(b, err)
 	b.Cleanup(func() {
 		testutil.Ok(b, os.RemoveAll(tmpDir))
@@ -2225,8 +2251,6 @@ func prepareBucket(b *testing.B, resolutionLevel compact.ResolutionLevel) (*buck
 }
 
 func benchmarkBlockSeriesWithConcurrency(b *testing.B, concurrency int, blockMeta *metadata.Meta, blk *bucketBlock, aggrs []storepb.Aggr) {
-	ctx := context.Background()
-
 	// Run the same number of queries per goroutine.
 	queriesPerWorker := b.N / concurrency
 
@@ -2263,10 +2287,10 @@ func benchmarkBlockSeriesWithConcurrency(b *testing.B, concurrency int, blockMet
 				// must be called only from the goroutine running the Benchmark function.
 				testutil.Ok(b, err)
 
-				indexReader := blk.indexReader(ctx)
-				chunkReader := blk.chunkReader(ctx)
+				indexReader := blk.indexReader()
+				chunkReader := blk.chunkReader()
 
-				seriesSet, _, err := blockSeries(nil, indexReader, chunkReader, matchers, chunksLimiter, seriesLimiter, req.SkipChunks, req.MinTime, req.MaxTime, req.Aggregates)
+				seriesSet, _, err := blockSeries(context.Background(), nil, indexReader, chunkReader, matchers, chunksLimiter, seriesLimiter, req.SkipChunks, req.MinTime, req.MaxTime, req.Aggregates, nil)
 				testutil.Ok(b, err)
 
 				// Ensure at least 1 series has been returned (as expected).

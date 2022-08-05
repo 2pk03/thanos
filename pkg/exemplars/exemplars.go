@@ -6,6 +6,7 @@ package exemplars
 import (
 	"context"
 	"sort"
+	"sync"
 
 	"github.com/pkg/errors"
 	"github.com/prometheus/prometheus/storage"
@@ -37,10 +38,13 @@ type exemplarsServer struct {
 
 	warnings []error
 	data     []*exemplarspb.ExemplarData
+	mu       sync.Mutex
 }
 
 func (srv *exemplarsServer) Send(res *exemplarspb.ExemplarsResponse) error {
 	if res.GetWarning() != "" {
+		srv.mu.Lock()
+		defer srv.mu.Unlock()
 		srv.warnings = append(srv.warnings, errors.New(res.GetWarning()))
 		return nil
 	}
@@ -49,6 +53,8 @@ func (srv *exemplarsServer) Send(res *exemplarspb.ExemplarsResponse) error {
 		return errors.New("empty exemplars data")
 	}
 
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
 	srv.data = append(srv.data, res.GetData())
 	return nil
 }
@@ -81,6 +87,10 @@ func (rr *GRPCClient) Exemplars(ctx context.Context, req *exemplarspb.ExemplarsR
 
 	if err := rr.proxy.Exemplars(req, resp); err != nil {
 		return nil, nil, errors.Wrap(err, "proxy Exemplars")
+	}
+
+	if resp.data == nil {
+		return make([]*exemplarspb.ExemplarData, 0), resp.warnings, nil
 	}
 
 	resp.data = dedupExemplarsResponse(resp.data, rr.replicaLabels)

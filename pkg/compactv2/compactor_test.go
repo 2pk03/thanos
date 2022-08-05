@@ -6,7 +6,6 @@ package compactv2
 import (
 	"bytes"
 	"context"
-	"io/ioutil"
 	"math"
 	"os"
 	"path/filepath"
@@ -14,12 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	"github.com/oklog/ulid"
 	"github.com/pkg/errors"
 	"github.com/prometheus/common/model"
-	"github.com/prometheus/prometheus/pkg/labels"
-	"github.com/prometheus/prometheus/pkg/relabel"
+	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/model/relabel"
+	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/prometheus/tsdb/chunks"
@@ -588,7 +588,7 @@ func TestCompactor_WriteSeries_e2e(t *testing.T) {
 		},
 	} {
 		t.Run(tcase.name, func(t *testing.T) {
-			tmpDir, err := ioutil.TempDir("", "test-series-writer")
+			tmpDir, err := os.MkdirTemp("", "test-series-writer")
 			testutil.Ok(t, err)
 			defer func() { testutil.Ok(t, os.RemoveAll(tmpDir)) }()
 
@@ -725,7 +725,7 @@ func createBlockSeries(bDir string, inputSeries []seriesSamples) (err error) {
 			return err
 		}
 	}
-	var ref uint64
+	var ref storage.SeriesRef
 	for _, input := range inputSeries {
 		var chks []chunks.Meta
 		for _, chk := range input.chunks {

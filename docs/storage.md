@@ -1,16 +1,10 @@
----
-type: docs
-title: Object Storage & Data Format
-menu: thanos
----
-
 # Object Storage & Data Format
 
 Thanos uses object storage as primary storage for metrics and metadata related to them. In this document you can learn how to configure your object storage and what is the data layout and format for primary Thanos components that are "block" aware, like: `sidecar` `compact`, `receive` and `store gateway`.
 
 ## Configuring Access to Object Storage
 
-Thanos supports any object stores that can be implemented against Thanos [objstore.Bucket interface](../pkg/objstore/objstore.go).
+Thanos supports any object stores that can be implemented against Thanos [objstore.Bucket interface](https://github.com/thanos-io/objstore/blob/main/objstore.go).
 
 All clients can be configured using `--objstore.config-file` to reference to the configuration file or `--objstore.config` to put yaml config directly.
 
@@ -49,7 +43,7 @@ Current object storage client implementations:
 | [AWS/S3](#s3) (and all S3-compatible storages e.g disk-based [Minio](https://min.io/)) | Stable             | Production Usage      | yes               | @bwplotka               |
 | [Azure Storage Account](#azure)                                                        | Stable             | Production Usage      | no                | @vglafirov              |
 | [OpenStack Swift](#openstack-swift)                                                    | Beta (working PoC) | Production Usage      | yes               | @FUSAKLA                |
-| [Tencent COS](#tencent-cos)                                                            | Beta               | Production Usage      | no                | @jojohappy              |
+| [Tencent COS](#tencent-cos)                                                            | Beta               | Production Usage      | no                | @jojohappy,@hanjm       |
 | [AliYun OSS](#aliyun-oss)                                                              | Beta               | Production Usage      | no                | @shaulboozhiao,@wujinhu |
 | [Local Filesystem](#filesystem)                                                        | Stable             | Testing and Demo only | yes               | @bwplotka               |
 
@@ -71,6 +65,7 @@ config:
   bucket: ""
   endpoint: ""
   region: ""
+  aws_sdk_auth: false
   access_key: ""
   insecure: false
   signature_version2: false
@@ -85,18 +80,32 @@ config:
     max_idle_conns: 100
     max_idle_conns_per_host: 100
     max_conns_per_host: 0
+    tls_config:
+      ca_file: ""
+      cert_file: ""
+      key_file: ""
+      server_name: ""
+      insecure_skip_verify: false
+    disable_compression: false
   trace:
     enable: false
   list_objects_version: ""
+  bucket_lookup_type: auto
   part_size: 67108864
   sse_config:
     type: ""
     kms_key_id: ""
     kms_encryption_context: {}
     encryption_key: ""
+  sts_endpoint: ""
+prefix: ""
 ```
 
 At a minimum, you will need to provide a value for the `bucket`, `endpoint`, `access_key`, and `secret_key` keys. The rest of the keys are optional.
+
+However if you set `aws_sdk_auth: true` Thanos will use the default authentication methods of the AWS SDK for go based on [known environment variables](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html) (`AWS_PROFILE`, `AWS_WEB_IDENTITY_TOKEN_FILE` ... etc) and known AWS config files (~/.aws/config). If you turn this on, then the `bucket` and `endpoint` are the required config keys.
+
+The field `prefix` can be used to transparently use prefixes in your S3 bucket. This allows you to separate blocks coming from different sources into paths with different prefixes, making it easier to understand what's going on (i.e. you don't have to use Thanos tooling to know from where which blocks came).
 
 The AWS region to endpoint mapping can be found in this [link](https://docs.aws.amazon.com/general/latest/gr/s3.html).
 
@@ -109,6 +118,10 @@ Please refer to the documentation of [the Transport type](https://golang.org/pkg
 `part_size` is specified in bytes and refers to the minimum file size used for multipart uploads, as some custom S3 implementations may have different requirements. A value of `0` means to use a default 128 MiB size.
 
 Set `list_objects_version: "v1"` for S3 compatible APIs that don't support ListObjectsV2 (e.g. some versions of Ceph). Default value (`""`) is equivalent to `"v2"`.
+
+`http_config.tls_config` allows configuring TLS connections. Please refer to the document of [tls_config](https://prometheus.io/docs/prometheus/latest/configuration/configuration/#tls_config) for detailed information on what each option does.
+
+`bucket_lookup_type` can be `auto`, `virtual-hosted` or `path`. Read more about it [here](https://docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html).
 
 For debug and testing purposes you can set
 
@@ -232,6 +245,12 @@ With this policy you should be able to run set `THANOS_TEST_OBJSTORE_SKIP=GCS,AZ
 
 Details about AWS policies: https://docs.aws.amazon.com/AmazonS3/latest/dev/using-with-s3-actions.html
 
+##### STS Endpoint
+
+If you want to use IAM credential retrieved from an instance profile, Thanos needs to authenticate through AWS STS. For this purposes you can specify your own STS Endpoint.
+
+By default Thanos will use endpoint: https://sts.amazonaws.com and AWS region corresponding endpoints.
+
 #### GCS
 
 To configure Google Cloud Storage bucket as an object store you need to set `bucket` with GCS bucket name and configure Google Application credentials.
@@ -243,6 +262,7 @@ type: GCS
 config:
   bucket: ""
   service_account: ""
+prefix: ""
 ```
 
 ##### Using GOOGLE_APPLICATION_CREDENTIALS
@@ -320,6 +340,7 @@ config:
   endpoint: ""
   max_retries: 0
   msi_resource: ""
+  user_assigned_id: ""
   pipeline_config:
     max_tries: 0
     try_timeout: 0s
@@ -336,10 +357,21 @@ config:
     max_idle_conns: 0
     max_idle_conns_per_host: 0
     max_conns_per_host: 0
+    tls_config:
+      ca_file: ""
+      cert_file: ""
+      key_file: ""
+      server_name: ""
+      insecure_skip_verify: false
     disable_compression: false
+prefix: ""
 ```
 
-If `msi_resource` is used, authentication is done via ServicePrincipalToken. The value for Azure should be `https://<storage-account-name>.blob.core.windows.net`. The generic `max_retries` will be used as value for the `pipeline_config`'s `max_tries` and `reader_config`'s `max_retry_requests`. For more control, `max_retries` could be ignored (0) and one could set specific retry values.
+If `msi_resource` is used, authentication is done via system-assigned managed identity. The value for Azure should be `https://<storage-account-name>.blob.core.windows.net`.
+
+If `user_assigned_id` is used, authentication is done via user-assigned managed identity. When using `user_assigned_id` the `msi_resource` defaults to `https://<storage_account>.<endpoint>`
+
+The generic `max_retries` will be used as value for the `pipeline_config`'s `max_tries` and `reader_config`'s `max_retry_requests`. For more control, `max_retries` could be ignored (0) and one could set specific retry values.
 
 #### OpenStack Swift
 
@@ -373,6 +405,7 @@ config:
   connect_timeout: 10s
   timeout: 5m
   use_dynamic_large_objects: false
+prefix: ""
 ```
 
 #### Tencent COS
@@ -387,17 +420,31 @@ config:
   bucket: ""
   region: ""
   app_id: ""
+  endpoint: ""
   secret_key: ""
   secret_id: ""
   http_config:
     idle_conn_timeout: 1m30s
     response_header_timeout: 2m
+    insecure_skip_verify: false
     tls_handshake_timeout: 10s
     expect_continue_timeout: 1s
     max_idle_conns: 100
     max_idle_conns_per_host: 100
     max_conns_per_host: 0
+    tls_config:
+      ca_file: ""
+      cert_file: ""
+      key_file: ""
+      server_name: ""
+      insecure_skip_verify: false
+    disable_compression: false
+prefix: ""
 ```
+
+The `secret_key` and `secret_id` field is required. The `http_config` field is optional for optimize HTTP transport settings. There are two ways to configure the required bucket information:
+1. Provide the values of `bucket`, `region` and `app_id` keys.
+2. Provide the values of `endpoint` key with url format when you want to specify vpc internal endpoint. Please refer to the document of [endpoint](https://intl.cloud.tencent.com/document/product/436/6224) for more detail.
 
 Set the flags `--objstore.config-file` to reference to the configuration file.
 
@@ -414,9 +461,24 @@ config:
   bucket: ""
   access_key_id: ""
   access_key_secret: ""
+prefix: ""
 ```
 
 Use --objstore.config-file to reference to this configuration file.
+
+#### Baidu BOS
+
+In order to use Baidu BOS object storage, you should apply for a Baidu Account and create an object storage bucket first. Refer to [Baidu Cloud Documents](https://cloud.baidu.com/doc/BOS/index.html) for more details. To use Baidu BOS object storage, please specify the following yaml configuration file in `--objstore.config*` flag.
+
+```yaml mdox-exec="go run scripts/cfggen/main.go --name=bos.Config"
+type: BOS
+config:
+  bucket: ""
+  endpoint: ""
+  access_key: ""
+  secret_key: ""
+prefix: ""
+```
 
 #### Filesystem
 
@@ -428,25 +490,30 @@ NOTE: This storage type is experimental and might be inefficient. It is NOT advi
 type: FILESYSTEM
 config:
   directory: ""
+prefix: ""
 ```
 
 ### How to add a new client to Thanos?
 
+objstore.go
+
 Following checklist allows adding new Go code client to supported providers:
 
 1. Create new directory under `pkg/objstore/<provider>`
-2. Implement [objstore.Bucket interface](../pkg/objstore/objstore.go)
+2. Implement [objstore.Bucket interface](https://github.com/thanos-io/objstore/blob/main//objstore.go)
 3. Add `NewTestBucket` constructor for testing purposes, that creates and deletes temporary bucket.
-4. Use created `NewTestBucket` in [ForeachStore method](../pkg/objstore/objtesting/foreach.go) to ensure we can run tests against new provider. (In PR)
-5. RUN the [TestObjStoreAcceptanceTest](../pkg/objstore/objtesting/acceptance_e2e_test.go) against your provider to ensure it fits. Fix any found error until test passes. (In PR)
-6. Add client implementation to the factory in [factory](../pkg/objstore/client/factory.go) code. (Using as small amount of flags as possible in every command)
+4. Use created `NewTestBucket` in [ForeachStore method](https://github.com/thanos-io/objstore/blob/main/objtesting/foreach.go) to ensure we can run tests against new provider. (In PR)
+5. RUN the [TestObjStoreAcceptanceTest](https://github.com/thanos-io/objstore/blob/main//objtesting/acceptance_e2e_test.go) against your provider to ensure it fits. Fix any found error until test passes. (In PR)
+6. Add client implementation to the factory in [factory](https://github.com/thanos-io/objstore/blob/main/client/factory.go) code. (Using as small amount of flags as possible in every command)
 7. Add client struct config to [bucketcfggen](../scripts/cfggen/main.go) to allow config auto generation.
 
 At that point, anyone can use your provider by spec.
 
+Check the checklist in [thanos-io/objstore](https://github.com/thanos-io/objstore#how-to-add-a-new-client-to-thanos) for more comprehensive information!
+
 ## Data in Object Storage
 
-Thanos supports writing and reading data in native Prometheus `TSDB blocks` in [TSDB format](https://github.com/prometheus/prometheus/tree/master/tsdb/docs/format). This is the format used by [Prometheus](https://prometheus.io) TSDB database for persisting data on the local disk. With the efficient index and [chunk](design.md/#chunk) binary formats, it also fits well to be used directly from object storage using range GET API.
+Thanos supports writing and reading data in native Prometheus `TSDB blocks` in [TSDB format](https://github.com/prometheus/prometheus/tree/master/tsdb/docs/format). This is the format used by [Prometheus](https://prometheus.io) TSDB database for persisting data on the local disk. With the efficient index and [chunk](design.md#chunk) binary formats, it also fits well to be used directly from object storage using range GET API.
 
 Following sections explain this format in details with the additional files and entries that Thanos system supports.
 
@@ -644,7 +711,7 @@ From high level it allows to find:
 * Label names
 * Label values for label name
 * All series labels
-* Given (or all) series' chunk reference. This can be used to find [chunk](design.md/#chunk) with samples in the [chunk files](#chunks-file-format)
+* Given (or all) series' chunk reference. This can be used to find [chunk](design.md#chunk) with samples in the [chunk files](#chunks-file-format)
 
 The following describes the format of the `index` file found in each block directory. It is terminated by a table of contents which serves as an entry point into the index.
 
@@ -706,7 +773,7 @@ The section contains a sequence of the string entries, each prefixed with the st
 
 ##### Series
 
-The section contains a sequence of series that hold the label set of the series as well as its [chunks](design.md/#chunk) within the block. The series are sorted lexicographically by their label sets. Each series section is aligned to 16 bytes. The ID for a series is the `offset/16`. This serves as the series' ID in all subsequent references. Thereby, a sorted list of series IDs implies a lexicographically sorted list of series label sets.
+The section contains a sequence of series that hold the label set of the series as well as its [chunks](design.md#chunk) within the block. The series are sorted lexicographically by their label sets. Each series section is aligned to 16 bytes. The ID for a series is the `offset/16`. This serves as the series' ID in all subsequent references. Thereby, a sorted list of series IDs implies a lexicographically sorted list of series label sets.
 
 ```
 ┌───────────────────────────────────────┐
@@ -720,9 +787,9 @@ The section contains a sequence of series that hold the label set of the series 
 └───────────────────────────────────────┘
 ```
 
-Every series entry first holds its number of labels, followed by tuples of symbol table references that contain the label name and value. The label pairs are lexicographically sorted. After the labels, the number of indexed [chunks](design.md/#chunk) is encoded, followed by a sequence of metadata entries containing the chunks minimum (`mint`) and maximum (`maxt`) timestamp and a reference to its position in the chunk file. The `mint` is the time of the first sample and `maxt` is the time of the last sample in the chunk. Holding the time range data in the index allows dropping chunks irrelevant to queried time ranges without accessing them directly.
+Every series entry first holds its number of labels, followed by tuples of symbol table references that contain the label name and value. The label pairs are lexicographically sorted. After the labels, the number of indexed [chunks](design.md#chunk) is encoded, followed by a sequence of metadata entries containing the chunks minimum (`mint`) and maximum (`maxt`) timestamp and a reference to its position in the chunk file. The `mint` is the time of the first sample and `maxt` is the time of the last sample in the chunk. Holding the time range data in the index allows dropping chunks irrelevant to queried time ranges without accessing them directly.
 
-`mint` of the first [chunk](design.md/#chunk) is stored, it's `maxt` is stored as a delta and the `mint` and `maxt` are encoded as deltas to the previous time for subsequent chunks. Similarly, the reference of the first chunk is stored and the next ref is stored as a delta to the previous one.
+`mint` of the first [chunk](design.md#chunk) is stored, it's `maxt` is stored as a delta and the `mint` and `maxt` are encoded as deltas to the previous time for subsequent chunks. Similarly, the reference of the first chunk is stored and the next ref is stored as a delta to the previous one.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -763,7 +830,7 @@ Every series entry first holds its number of labels, followed by tuples of symbo
 
 ##### Label Index
 
-A label index section indexes the existing (combined) values for one or more label names. The `#names` field determines the number of indexed label names, followed by the total number of entries in the `#entries` field. The body holds #entries / #names tuples of symbol table references, each tuple being of #names length. The value tuples are sorted in lexicographically increasing order. This is no longer used.
+A label index section indexes the existing (combined) values for one or more label names. The `#names` field determines the number of indexed label names, followed by the total number of entries in the `#entries` field. The body holds #entries / #names tuples of symbol table references, each tuple being of `#names` length. The value tuples are sorted in lexicographically increasing order. This is no longer used.
 
 ```
 ┌───────────────┬────────────────┬────────────────┐
@@ -888,7 +955,7 @@ The table of contents serves as an entry point to the entire index and points to
 
 The following describes the format of a chunks file, which is created in the `chunks/` directory of a block. The maximum size per segment file is 512MiB.
 
-[Chunks](design.md/#chunk) in the files are referenced from the index by uint64 composed of in-file offset (lower 4 bytes) and segment sequence number (upper 4 bytes).
+[Chunks](design.md#chunk) in the files are referenced from the index by uint64 composed of in-file offset (lower 4 bytes) and segment sequence number (upper 4 bytes).
 
 ```
 ┌──────────────────────────────┐

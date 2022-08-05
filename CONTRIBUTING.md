@@ -20,7 +20,7 @@ The philosophy of Thanos and our community borrows heavily from UNIX philosophy 
 If you encounter any issue or you have an idea to improve, please:
 
 * Search through Google and [existing open and closed GitHub Issues](https://github.com/thanos-io/thanos/issues) for the answer first. If you find a relevant topic, please comment on the issue.
-* If none of the issues are relevant, please add an issue to [GitHub issues](https://github.com/thanos-io/thanos/issues). Please provide any relevant information as suggested by the Pull Request template.
+* If none of the issues are relevant, please add an issue to [GitHub issues](https://github.com/thanos-io/thanos/issues). Please provide any relevant information as suggested by the Issue template.
 * If you have a quick question you might want to also ask on #thanos or #thanos-dev slack channel in the CNCF workspace. We recommend using GitHub issues for issues and feedback, because GitHub issues are trackable.
 
 If you encounter a security vulnerability, please refer to [Reporting a Vulnerability process](SECURITY.md#reporting-a-vulnerability)
@@ -29,7 +29,7 @@ If you encounter a security vulnerability, please refer to [Reporting a Vulnerab
 
 When contributing a complex change to Thanos repository, please discuss the change you wish to make within a Github issue, in Slack, or by another method with the owners of this repository before making the change.
 
-Adding a large new feature or/and component to Thanos should be done by first creating a [proposal](docs/contributing/proposal-process.md) document outlining the design decisions of the change, motivations for the change, and any alternatives that might have been considered.
+Adding a large new feature or/and component to Thanos should be done by first creating a [proposal](docs/proposals-done) document outlining the design decisions of the change, motivations for the change, and any alternatives that might have been considered.
 
 ## General Naming
 
@@ -43,7 +43,7 @@ In the code and documentation prefer non-offensive terminology, for example:
 
 Thanos is a distributed system comprised of several services and CLI tools as listed [here](cmd/thanos).
 
-When we refer to them in a technical capacity we use the verbal form: `store`, `compact`, `rule`, `query`, `query_frontend`. This includes:
+When we refer to them in a technical capacity we use the verbal form: `store`, `compact`, `rule`, `query`, `query-frontend`. This includes:
 
 * Code
 * Metrics
@@ -67,18 +67,19 @@ The following section explains various suggestions and procedures to note during
 ### Prerequisites
 
 * It is strongly recommended that you use Linux distributions systems or OSX for development.
-* Go 1.13.9 or newer installed.
-* For React UI, you will need a working NodeJS environment and the Yarn package manager to compile the Web UI assets.
+* Go 1.17.x or higher.
+* For React UI, you will need a working NodeJS environment and the npm package manager to compile the Web UI assets.
 
 ### First Steps
 
 It's key to get familiarized with the style guide and mechanics of Thanos, especially if your contribution touches more than one component of the Thanos distributed system. We recommend:
 
-* Reading the [getting started docs](docs/getting-started.md) and working through them, or alternatively working through the [Thanos tutorial](https://katacoda.com/thanos).
+* Reading the [getting started docs](docs/getting-started.md) and working through them.
 * Familiarizing yourself with our [coding style guidelines.](docs/contributing/coding-style-guide.md).
 * Familiarizing yourself with the [Makefile](Makefile) commands, for example `format`, `build`, `proto`, `docker` and `test`. `make help` will print most of available commands with relevant details.
 * Spin up a prebuilt dev environment using Gitpod.io [![Gitpod Ready-to-Code](https://img.shields.io/badge/Gitpod-ready--to--code-blue?logo=gitpod)](https://gitpod.io/#https://github.com/thanos-io/thanos)
 * In case you want to develop the project locally, install **Golang** in your machine. Here is a nice [gist](https://gist.github.com/nikhita/432436d570b89cab172dcf2894465753) for this purpose.
+* You can run an interactive example, which populates some data as well, by following the steps mentioned [here](https://github.com/thanos-io/thanos/blob/main/tutorials/interactive-example/README.md).
 
 ### Installing Project locally in your machine
 
@@ -154,6 +155,16 @@ $ git push origin <your_branch_for_new_pr>
 ```
 
 **Tests your changes**
+
+**Formatting**
+
+First of all, fall back to `make help` to see all availible commands. There are a few checks that happen when making a PR and these need to pass. We can make sure locally before making the PR by using commands that are related to your changes:
+- `make docs` generates, formats and cleans up white noise.
+- `make changed-docs` does same as above, but just for changed docs by checking `git diff` on which files are changed.
+- `make check-docs` generates, formats, cleans up white noise and checks links. Since it can be annoying to wait on link check results - it takes forever - to skip the check, you can use `make docs`).
+- `make format` formats code
+
+If you only made documentation changes, which do not include a link, you will be fine by using `make docs`. If you also changed some code, run `make format` as well.
 
 **Updating your branch**
 

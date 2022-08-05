@@ -6,19 +6,21 @@ package exemplars
 import (
 	"context"
 	"io"
+	"strings"
 
-	"github.com/go-kit/kit/log"
-	"github.com/go-kit/kit/log/level"
+	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 	"github.com/pkg/errors"
-	"github.com/prometheus/prometheus/pkg/labels"
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
-	"github.com/thanos-io/thanos/pkg/exemplars/exemplarspb"
-	"github.com/thanos-io/thanos/pkg/store/storepb"
-	"github.com/thanos-io/thanos/pkg/tracing"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/thanos-io/thanos/pkg/exemplars/exemplarspb"
+	"github.com/thanos-io/thanos/pkg/store/storepb"
+	"github.com/thanos-io/thanos/pkg/tracing"
 )
 
 // Proxy implements exemplarspb.Exemplars gRPC that fanouts requests to
@@ -78,11 +80,14 @@ func (s *Proxy) Exemplars(req *exemplarspb.ExemplarsRequest, srv exemplarspb.Exe
 		exemplars []*exemplarspb.ExemplarData
 	)
 
+	queryParts := make([]string, 0)
+	labelMatchers := make([]string, 0)
 	for _, st := range s.exemplars() {
-		query := ""
+		queryParts = queryParts[:0]
+
 	Matchers:
 		for _, matchers := range selectors {
-			metricsSelector := ""
+			matcherSet := make(map[string]struct{})
 			for _, m := range matchers {
 				for _, ls := range st.LabelSets {
 					if lv := ls.Get(m.Name); lv != "" {
@@ -95,27 +100,27 @@ func (s *Proxy) Exemplars(req *exemplarspb.ExemplarsRequest, srv exemplarspb.Exe
 							continue
 						}
 					}
-					if metricsSelector == "" {
-						metricsSelector += m.String()
-					} else {
-						metricsSelector += ", " + m.String()
-					}
+					matcherSet[m.String()] = struct{}{}
 				}
 			}
-			// Construct the query by concatenating metric selectors with '+'.
-			// We cannot preserve the original query info, but the returned
-			// results are the same.
-			if query == "" {
-				query += "{" + metricsSelector + "}"
-			} else {
-				query += " + {" + metricsSelector + "}"
+
+			labelMatchers = labelMatchers[:0]
+			for m := range matcherSet {
+				labelMatchers = append(labelMatchers, m)
 			}
+
+			queryParts = append(queryParts, "{"+strings.Join(labelMatchers, ", ")+"}")
 		}
 
 		// No matchers match this store.
-		if query == "" {
+		if len(queryParts) == 0 {
 			continue
 		}
+
+		// Construct the query by concatenating metric selectors with '+'.
+		// We cannot preserve the original query info, but the returned
+		// results are the same.
+		query := strings.Join(queryParts, "+")
 		r := &exemplarspb.ExemplarsRequest{
 			Start:                   req.Start,
 			End:                     req.End,
@@ -191,8 +196,8 @@ func (stream *exemplarsStream) receive(ctx context.Context) error {
 			if err := stream.server.Send(exemplarspb.NewWarningExemplarsResponse(err)); err != nil {
 				return errors.Wrapf(err, "sending exemplars error to server %v", stream.server)
 			}
-
-			continue
+			// Not an error if response strategy is warning.
+			return nil
 		}
 
 		if w := exemplar.GetWarning(); w != "" {

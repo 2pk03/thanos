@@ -16,7 +16,7 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/pkg/errors"
-	"github.com/prometheus/prometheus/pkg/labels"
+	"github.com/prometheus/prometheus/model/labels"
 )
 
 var sep = []byte{'\xff'}
@@ -71,6 +71,25 @@ func ZLabelSetsToPromLabelSets(lss ...ZLabelSet) []labels.Labels {
 		res = append(res, ls.PromLabels())
 	}
 	return res
+}
+
+// ZLabelSetsFromPromLabels converts []labels.labels to []labelpb.ZLabelSet.
+func ZLabelSetsFromPromLabels(lss ...labels.Labels) []ZLabelSet {
+	sets := make([]ZLabelSet, 0, len(lss))
+	for _, ls := range lss {
+		set := ZLabelSet{
+			Labels: make([]ZLabel, 0, len(ls)),
+		}
+		for _, lbl := range ls {
+			set.Labels = append(set.Labels, ZLabel{
+				Name:  lbl.Name,
+				Value: lbl.Value,
+			})
+		}
+		sets = append(sets, set)
+	}
+
+	return sets
 }
 
 // ZLabel is a Label (also easily transformable to Prometheus labels.Labels) that can be unmarshalled from protobuf

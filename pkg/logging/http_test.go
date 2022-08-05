@@ -6,14 +6,14 @@ package logging
 import (
 	"bytes"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
+
 	"github.com/thanos-io/thanos/pkg/testutil"
 )
 
@@ -43,7 +43,7 @@ func TestHTTPServerMiddleware(t *testing.T) {
 	hm(w, req)
 
 	resp := w.Result()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	testutil.Ok(t, err)
 
 	testutil.Equals(t, 200, resp.StatusCode)
@@ -58,7 +58,7 @@ func TestHTTPServerMiddleware(t *testing.T) {
 	hm(w, req)
 
 	resp = w.Result()
-	body, err = ioutil.ReadAll(resp.Body)
+	body, err = io.ReadAll(resp.Body)
 	testutil.Ok(t, err)
 
 	testutil.Equals(t, 200, resp.StatusCode)
@@ -73,7 +73,7 @@ func TestHTTPServerMiddleware(t *testing.T) {
 	hm(w, req)
 
 	resp = w.Result()
-	body, err = ioutil.ReadAll(resp.Body)
+	body, err = io.ReadAll(resp.Body)
 	testutil.Ok(t, err)
 
 	testutil.Equals(t, 200, resp.StatusCode)

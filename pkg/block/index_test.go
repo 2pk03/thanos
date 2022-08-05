@@ -5,16 +5,17 @@ package block
 
 import (
 	"context"
-	"io/ioutil"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/go-kit/kit/log"
-	"github.com/prometheus/prometheus/pkg/labels"
+	"github.com/go-kit/log"
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/chunks"
 	"github.com/prometheus/prometheus/tsdb/index"
+
 	"github.com/thanos-io/thanos/pkg/block/metadata"
 	"github.com/thanos-io/thanos/pkg/testutil"
 	"github.com/thanos-io/thanos/pkg/testutil/e2eutil"
@@ -23,7 +24,7 @@ import (
 func TestRewrite(t *testing.T) {
 	ctx := context.Background()
 
-	tmpDir, err := ioutil.TempDir("", "test-indexheader")
+	tmpDir, err := os.MkdirTemp("", "test-indexheader")
 	testutil.Ok(t, err)
 	defer func() { testutil.Ok(t, os.RemoveAll(tmpDir)) }()
 
@@ -83,5 +84,18 @@ func TestRewrite(t *testing.T) {
 		testutil.Ok(t, ir2.Series(p.At(), &lset, &chks))
 		testutil.Equals(t, 1, len(chks))
 	}
+}
 
+func TestGatherIndexHealthStatsReturnsOutOfOrderChunksErr(t *testing.T) {
+	blockDir, err := os.MkdirTemp("", "test-ooo-index")
+	testutil.Ok(t, err)
+
+	err = testutil.PutOutOfOrderIndex(blockDir, 0, math.MaxInt64)
+	testutil.Ok(t, err)
+
+	stats, err := GatherIndexHealthStats(log.NewLogfmtLogger(os.Stderr), blockDir+"/"+IndexFilename, 0, math.MaxInt64)
+
+	testutil.Ok(t, err)
+	testutil.Equals(t, 1, stats.OutOfOrderChunks)
+	testutil.NotOk(t, stats.OutOfOrderChunksErr())
 }
