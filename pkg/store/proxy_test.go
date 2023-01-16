@@ -15,22 +15,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/go-kit/log"
 	"github.com/gogo/protobuf/proto"
 	"github.com/gogo/protobuf/types"
 	"github.com/pkg/errors"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/timestamp"
+	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/efficientgo/core/testutil"
 	"github.com/thanos-io/thanos/pkg/component"
 	"github.com/thanos-io/thanos/pkg/store/labelpb"
 	"github.com/thanos-io/thanos/pkg/store/storepb"
 	storetestutil "github.com/thanos-io/thanos/pkg/store/storepb/testutil"
-	"github.com/thanos-io/thanos/pkg/testutil"
+	"github.com/thanos-io/thanos/pkg/testutil/custom"
 )
 
 type testClient struct {
@@ -41,6 +44,7 @@ type testClient struct {
 	minTime          int64
 	maxTime          int64
 	supportsSharding bool
+	isLocalStore     bool
 }
 
 func (c testClient) LabelSets() []labels.Labels {
@@ -55,16 +59,39 @@ func (c testClient) SupportsSharding() bool {
 	return c.supportsSharding
 }
 
+func (c testClient) SendsSortedSeries() bool {
+	return false
+}
+
 func (c testClient) String() string {
 	return "test"
 }
 
-func (c testClient) Addr() string {
-	return "testaddr"
+func (c testClient) Addr() (string, bool) {
+	return "testaddr", c.isLocalStore
 }
 
+type mockedSeriesServer struct {
+	storepb.Store_SeriesServer
+	ctx context.Context
+
+	send func(*storepb.SeriesResponse) error
+}
+
+func (s *mockedSeriesServer) Send(r *storepb.SeriesResponse) error {
+	return s.send(r)
+}
+func (s *mockedSeriesServer) Context() context.Context { return s.ctx }
+
+type mockedStartTimeDB struct {
+	*tsdb.DBReadOnly
+	startTime int64
+}
+
+func (db *mockedStartTimeDB) StartTime() (int64, error) { return db.startTime, nil }
+
 func TestProxyStore_Info(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -85,7 +112,7 @@ func TestProxyStore_Info(t *testing.T) {
 }
 
 func TestProxyStore_Series(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	for _, tc := range []struct {
 		title          string
@@ -554,7 +581,7 @@ func TestProxyStore_SeriesSlowStores(t *testing.T) {
 		t.Skip("enable THANOS_ENABLE_STORE_READ_TIMEOUT_TESTS to run store-read-timeout tests")
 	}
 
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	for _, tc := range []struct {
 		title          string
@@ -1092,7 +1119,7 @@ func TestProxyStore_SeriesSlowStores(t *testing.T) {
 }
 
 func TestProxyStore_Series_RequestParamsProxied(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	m := &mockedStoreAPI{
 		RespSeries: []*storepb.SeriesResponse{
@@ -1136,7 +1163,7 @@ func TestProxyStore_Series_RequestParamsProxied(t *testing.T) {
 }
 
 func TestProxyStore_Series_RegressionFillResponseChannel(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	var cls []Client
 	for i := 0; i < 10; i++ {
@@ -1192,7 +1219,7 @@ func TestProxyStore_Series_RegressionFillResponseChannel(t *testing.T) {
 }
 
 func TestProxyStore_LabelValues(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	m1 := &mockedStoreAPI{
 		RespLabelValues: &storepb.LabelValuesResponse{
@@ -1253,7 +1280,7 @@ func TestProxyStore_LabelValues(t *testing.T) {
 }
 
 func TestProxyStore_LabelNames(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	for _, tc := range []struct {
 		title     string
@@ -1458,7 +1485,7 @@ func seriesEquals(t *testing.T, expected []rawSeries, got []storepb.Series) {
 
 			j := 0
 			iter := c.Iterator(nil)
-			for iter.Next() {
+			for iter.Next() != chunkenc.ValNone {
 				testutil.Assert(t, j < len(expected[i].chunks[k]), "more samples than expected for %v chunk %d", series.Labels, k)
 
 				tv, v := iter.At()
@@ -1893,7 +1920,7 @@ func benchProxySeries(t testutil.TB, totalSamples, totalSeries int) {
 }
 
 func TestProxyStore_NotLeakingOnPrematureFinish(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	clients := []Client{
 		&testClient{
@@ -1960,10 +1987,14 @@ func TestProxyStore_NotLeakingOnPrematureFinish(t *testing.T) {
 
 func TestProxyStore_storeMatchMetadata(t *testing.T) {
 	c := testClient{}
+	c.isLocalStore = true
 
 	ok, reason := storeMatchDebugMetadata(c, [][]*labels.Matcher{{}})
-	testutil.Assert(t, ok)
-	testutil.Equals(t, "", reason)
+	testutil.Assert(t, !ok)
+	testutil.Equals(t, "the store is not remote, cannot match __address__", reason)
+
+	// Change client to remote.
+	c.isLocalStore = false
 
 	ok, reason = storeMatchDebugMetadata(c, [][]*labels.Matcher{{labels.MustNewMatcher(labels.MatchEqual, "__address__", "wrong")}})
 	testutil.Assert(t, !ok)
@@ -1987,7 +2018,15 @@ func TestDedupRespHeap_Deduplication(t *testing.T) {
 			responses: []*storepb.SeriesResponse{},
 			testFn: func(responses []*storepb.SeriesResponse, h *dedupResponseHeap) {
 				testutil.Equals(t, false, h.Next())
-				testutil.Equals(t, (*storepb.SeriesResponse)(nil), h.At())
+
+				callAtExpectPanic := func() {
+					defer func() {
+						testutil.Assert(t, recover() != nil, "expected a panic from At()")
+					}()
+
+					h.At()
+				}
+				callAtExpectPanic()
 			},
 		},
 		{
@@ -2042,6 +2081,7 @@ func TestDedupRespHeap_Deduplication(t *testing.T) {
 								{
 									Raw: &storepb.Chunk{
 										Type: storepb.Chunk_XOR,
+										Hash: xxhash.Sum64([]byte(`abcdefgh`)),
 										Data: []byte(`abcdefgh`),
 									},
 								},

@@ -4,11 +4,12 @@
 package receive
 
 import (
+	"net/url"
 	"os"
 	"path"
 	"testing"
 
-	"github.com/thanos-io/thanos/pkg/testutil"
+	"github.com/efficientgo/core/testutil"
 )
 
 func TestParseLimiterConfig(t *testing.T) {
@@ -23,26 +24,38 @@ func TestParseLimiterConfig(t *testing.T) {
 			configFileName: "good_limits.yaml",
 			wantErr:        false,
 			want: &RootLimitsConfig{
-				WriteLimits: writeLimitsConfig{
-					GlobalLimits: globalLimitsConfig{MaxConcurrency: 30},
-					DefaultLimits: defaultLimitsConfig{
-						RequestLimits: *newEmptyRequestLimitsConfig().
+				WriteLimits: WriteLimitsConfig{
+					GlobalLimits: GlobalLimitsConfig{
+						MaxConcurrency:           30,
+						MetaMonitoringURL:        "http://localhost:9090",
+						MetaMonitoringLimitQuery: "sum(prometheus_tsdb_head_series) by (tenant)",
+						metaMonitoringURL: &url.URL{
+							Scheme: "http",
+							Host:   "localhost:9090",
+						},
+					},
+					DefaultLimits: DefaultLimitsConfig{
+						RequestLimits: *NewEmptyRequestLimitsConfig().
 							SetSizeBytesLimit(1024).
 							SetSeriesLimit(1000).
 							SetSamplesLimit(10),
+						HeadSeriesLimit: 1000,
 					},
-					TenantsLimits: tenantsWriteLimitsConfig{
-						"acme": &writeLimitConfig{
-							RequestLimits: newEmptyRequestLimitsConfig().
-								SetSizeBytesLimit(0).
-								SetSeriesLimit(0).
-								SetSamplesLimit(0),
-						},
-						"ajax": &writeLimitConfig{
-							RequestLimits: newEmptyRequestLimitsConfig().
-								SetSeriesLimit(50000).
-								SetSamplesLimit(500),
-						},
+					TenantsLimits: TenantsWriteLimitsConfig{
+						"acme": NewEmptyWriteLimitConfig().
+							SetRequestLimits(
+								NewEmptyRequestLimitsConfig().
+									SetSizeBytesLimit(0).
+									SetSeriesLimit(0).
+									SetSamplesLimit(0),
+							).
+							SetHeadSeriesLimit(2000),
+						"ajax": NewEmptyWriteLimitConfig().
+							SetRequestLimits(
+								NewEmptyRequestLimitsConfig().
+									SetSeriesLimit(50000).
+									SetSamplesLimit(500),
+							),
 					},
 				},
 			},

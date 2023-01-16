@@ -19,12 +19,12 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 	"github.com/weaveworks/common/user"
 
+	"github.com/efficientgo/core/testutil"
 	cortexcache "github.com/thanos-io/thanos/internal/cortex/chunk/cache"
 	"github.com/thanos-io/thanos/internal/cortex/cortexpb"
 	"github.com/thanos-io/thanos/internal/cortex/querier/queryrange"
 	cortexvalidation "github.com/thanos-io/thanos/internal/cortex/util/validation"
 	"github.com/thanos-io/thanos/pkg/store/labelpb"
-	"github.com/thanos-io/thanos/pkg/testutil"
 )
 
 const (
@@ -75,6 +75,7 @@ func TestRoundTripRetryMiddleware(t *testing.T) {
 		Start: 0,
 		End:   2 * hour,
 		Step:  10 * seconds,
+		Query: "foo",
 	}
 
 	testLabelsRequest := &ThanosLabelsRequest{Path: "/api/v1/labels", Start: 0, End: 2 * hour}
@@ -222,6 +223,7 @@ func TestRoundTripSplitIntervalMiddleware(t *testing.T) {
 		Start: 0,
 		End:   2 * hour,
 		Step:  10 * seconds,
+		Query: "foo",
 	}
 
 	testLabelsRequest := &ThanosLabelsRequest{
@@ -241,12 +243,15 @@ func TestRoundTripSplitIntervalMiddleware(t *testing.T) {
 	labelsCodec := NewThanosLabelsCodec(true, 2*time.Hour)
 
 	for _, tc := range []struct {
-		name          string
-		splitInterval time.Duration
-		req           queryrange.Request
-		codec         queryrange.Codec
-		handlerFunc   func(bool) (*int, http.Handler)
-		expected      int
+		name                string
+		splitInterval       time.Duration
+		querySplitThreshold time.Duration
+		maxSplitInterval    time.Duration
+		minHorizontalShards int64
+		req                 queryrange.Request
+		codec               queryrange.Codec
+		handlerFunc         func(bool) (*int, http.Handler)
+		expected            int
 	}{
 		{
 			name:          "split interval == 0, disable split",
@@ -279,6 +284,39 @@ func TestRoundTripSplitIntervalMiddleware(t *testing.T) {
 			codec:         queryRangeCodec,
 			splitInterval: 1 * time.Hour,
 			expected:      2,
+		},
+		{
+			name:                "split to 4 requests, due to min horizontal shards",
+			req:                 testRequest,
+			handlerFunc:         promqlResults,
+			codec:               queryRangeCodec,
+			splitInterval:       0,
+			querySplitThreshold: 30 * time.Minute,
+			maxSplitInterval:    4 * time.Hour,
+			minHorizontalShards: 4,
+			expected:            4,
+		},
+		{
+			name:                "split to 2 requests, due to maxSplitInterval",
+			req:                 testRequest,
+			handlerFunc:         promqlResults,
+			codec:               queryRangeCodec,
+			splitInterval:       0,
+			querySplitThreshold: 30 * time.Minute,
+			maxSplitInterval:    1 * time.Hour,
+			minHorizontalShards: 4,
+			expected:            2,
+		},
+		{
+			name:                "split to 2 requests, due to maxSplitInterval",
+			req:                 testRequest,
+			handlerFunc:         promqlResults,
+			codec:               queryRangeCodec,
+			splitInterval:       0,
+			querySplitThreshold: 2 * time.Hour,
+			maxSplitInterval:    4 * time.Hour,
+			minHorizontalShards: 4,
+			expected:            1,
 		},
 		{
 			name:          "labels request won't be split",
@@ -320,6 +358,9 @@ func TestRoundTripSplitIntervalMiddleware(t *testing.T) {
 					QueryRangeConfig: QueryRangeConfig{
 						Limits:                 defaultLimits,
 						SplitQueriesByInterval: tc.splitInterval,
+						MinQuerySplitInterval:  tc.querySplitThreshold,
+						MaxQuerySplitInterval:  tc.maxSplitInterval,
+						HorizontalShards:       tc.minHorizontalShards,
 					},
 					LabelsConfig: LabelsConfig{
 						Limits:                 defaultLimits,
@@ -356,6 +397,7 @@ func TestRoundTripQueryRangeCacheMiddleware(t *testing.T) {
 		Step:                10 * seconds,
 		MaxSourceResolution: 1 * seconds,
 		Dedup:               true, // Deduplication is enabled by default.
+		Query:               "foo",
 	}
 
 	testRequestWithoutDedup := &ThanosQueryRangeRequest{
@@ -365,6 +407,7 @@ func TestRoundTripQueryRangeCacheMiddleware(t *testing.T) {
 		Step:                10 * seconds,
 		MaxSourceResolution: 1 * seconds,
 		Dedup:               false,
+		Query:               "foo",
 	}
 
 	// Same query params as testRequest, different maxSourceResolution
@@ -376,6 +419,7 @@ func TestRoundTripQueryRangeCacheMiddleware(t *testing.T) {
 		Step:                10 * seconds,
 		MaxSourceResolution: 10 * seconds,
 		Dedup:               true,
+		Query:               "foo",
 	}
 
 	// Same query params as testRequest, different maxSourceResolution
@@ -387,6 +431,7 @@ func TestRoundTripQueryRangeCacheMiddleware(t *testing.T) {
 		Step:                10 * seconds,
 		MaxSourceResolution: 1 * hour,
 		Dedup:               true,
+		Query:               "foo",
 	}
 
 	// Same query params as testRequest, but with storeMatchers
@@ -398,6 +443,7 @@ func TestRoundTripQueryRangeCacheMiddleware(t *testing.T) {
 		MaxSourceResolution: 1 * seconds,
 		StoreMatchers:       [][]*labels.Matcher{{labels.MustNewMatcher(labels.MatchEqual, "foo", "bar")}},
 		Dedup:               true,
+		Query:               "foo",
 	}
 
 	cacheConf := &queryrange.ResultsCacheConfig{
@@ -448,6 +494,7 @@ func TestRoundTripQueryRangeCacheMiddleware(t *testing.T) {
 				End:   25 * hour,
 				Step:  10 * seconds,
 				Dedup: true,
+				Query: "foo",
 			},
 			expected: 6,
 		},
@@ -459,6 +506,7 @@ func TestRoundTripQueryRangeCacheMiddleware(t *testing.T) {
 				End:   25 * hour,
 				Step:  10 * seconds,
 				Dedup: true,
+				Query: "foo",
 			},
 			expected: 6,
 		},

@@ -15,8 +15,8 @@ import (
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/index"
 
+	"github.com/efficientgo/core/testutil"
 	storetestutil "github.com/thanos-io/thanos/pkg/store/storepb/testutil"
-	"github.com/thanos-io/thanos/pkg/testutil"
 )
 
 func TestDiffVarintCodec(t *testing.T) {
@@ -25,7 +25,7 @@ func TestDiffVarintCodec(t *testing.T) {
 	headOpts := tsdb.DefaultHeadOptions()
 	headOpts.ChunkDirRoot = chunksDir
 	headOpts.ChunkRange = 1000
-	h, err := tsdb.NewHead(nil, nil, nil, headOpts, nil)
+	h, err := tsdb.NewHead(nil, nil, nil, nil, headOpts, nil)
 	testutil.Ok(t, err)
 	defer func() {
 		testutil.Ok(t, h.Close())

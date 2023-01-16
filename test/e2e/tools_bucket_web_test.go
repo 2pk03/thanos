@@ -24,17 +24,17 @@ import (
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/client"
 
+	"github.com/efficientgo/core/testutil"
 	v1 "github.com/thanos-io/thanos/pkg/api/blocks"
 	"github.com/thanos-io/thanos/pkg/errors"
 	"github.com/thanos-io/thanos/pkg/runutil"
-	"github.com/thanos-io/thanos/pkg/testutil"
 	"github.com/thanos-io/thanos/test/e2e/e2ethanos"
 )
 
 func TestToolsBucketWebExternalPrefixWithoutReverseProxy(t *testing.T) {
 	t.Parallel()
 
-	e, err := e2e.NewDockerEnvironment("e2e-test-tools-bucket-web-route-prefix")
+	e, err := e2e.NewDockerEnvironment("route-prefix")
 	testutil.Ok(t, err)
 	t.Cleanup(e2ethanos.CleanScenario(t, e))
 
@@ -67,7 +67,7 @@ func TestToolsBucketWebExternalPrefixWithoutReverseProxy(t *testing.T) {
 func TestToolsBucketWebExternalPrefix(t *testing.T) {
 	t.Parallel()
 
-	e, err := e2e.NewDockerEnvironment("e2e-test-tools-bucket-web-external-prefix")
+	e, err := e2e.NewDockerEnvironment("external-prefix")
 	testutil.Ok(t, err)
 	t.Cleanup(e2ethanos.CleanScenario(t, e))
 
@@ -104,7 +104,7 @@ func TestToolsBucketWebExternalPrefix(t *testing.T) {
 func TestToolsBucketWebExternalPrefixAndRoutePrefix(t *testing.T) {
 	t.Parallel()
 
-	e, err := e2e.NewDockerEnvironment("e2e-test-tools-bucket-web-and-route-prefix")
+	e, err := e2e.NewDockerEnvironment("route-prefix")
 	testutil.Ok(t, err)
 	t.Cleanup(e2ethanos.CleanScenario(t, e))
 
@@ -143,7 +143,7 @@ func TestToolsBucketWebExternalPrefixAndRoutePrefix(t *testing.T) {
 func TestToolsBucketWebWithTimeAndRelabelFilter(t *testing.T) {
 	t.Parallel()
 
-	e, err := e2e.NewDockerEnvironment("e2e-test-tools-bucket-web-time-and-relabel-filter")
+	e, err := e2e.NewDockerEnvironment("time-relabel")
 	testutil.Ok(t, err)
 	t.Cleanup(e2ethanos.CleanScenario(t, e))
 

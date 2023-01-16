@@ -18,11 +18,11 @@ import (
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb"
 
+	"github.com/efficientgo/core/testutil"
 	"github.com/thanos-io/thanos/pkg/block/metadata"
 	"github.com/thanos-io/thanos/pkg/runutil"
 	"github.com/thanos-io/thanos/pkg/store/labelpb"
 	"github.com/thanos-io/thanos/pkg/store/storepb/prompb"
-	"github.com/thanos-io/thanos/pkg/testutil"
 )
 
 func TestWriter(t *testing.T) {
@@ -262,7 +262,8 @@ func TestWriter(t *testing.T) {
 			gr := a.(storage.GetRef)
 
 			for _, ts := range testData.expectedIngested {
-				ref, _ := gr.GetRef(labelpb.ZLabelsToPromLabels(ts.Labels))
+				l := labelpb.ZLabelsToPromLabels(ts.Labels)
+				ref, _ := gr.GetRef(l, l.Hash())
 				testutil.Assert(t, ref != 0, fmt.Sprintf("appender should have reference to series %v", ts))
 			}
 		})

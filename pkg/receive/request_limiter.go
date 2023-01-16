@@ -14,11 +14,12 @@ const (
 	sizeBytesLimitName = "body_size"
 )
 
-var unlimitedRequestLimitsConfig = newEmptyRequestLimitsConfig().
+var unlimitedRequestLimitsConfig = NewEmptyRequestLimitsConfig().
 	SetSizeBytesLimit(0).
 	SetSeriesLimit(0).
 	SetSamplesLimit(0)
 
+// configRequestLimiter implements requestLimiter interface.
 type configRequestLimiter struct {
 	tenantLimits        map[string]*requestLimitsConfig
 	cachedDefaultLimits *requestLimitsConfig
@@ -26,7 +27,7 @@ type configRequestLimiter struct {
 	configuredLimits    *prometheus.GaugeVec
 }
 
-func newConfigRequestLimiter(reg prometheus.Registerer, writeLimits *writeLimitsConfig) *configRequestLimiter {
+func newConfigRequestLimiter(reg prometheus.Registerer, writeLimits *WriteLimitsConfig) *configRequestLimiter {
 	// Merge the default limits configuration with an unlimited configuration
 	// to ensure the nils are overwritten with zeroes.
 	defaultRequestLimits := writeLimits.DefaultLimits.RequestLimits.OverlayWith(unlimitedRequestLimitsConfig)
@@ -39,14 +40,21 @@ func newConfigRequestLimiter(reg prometheus.Registerer, writeLimits *writeLimits
 	tenantsLimits := writeLimits.TenantsLimits
 	tenantRequestLimits := make(map[string]*requestLimitsConfig)
 	for tenant, limitConfig := range tenantsLimits {
-		tenantRequestLimits[tenant] = limitConfig.RequestLimits.OverlayWith(defaultRequestLimits)
+		if limitConfig.RequestLimits != nil {
+			tenantRequestLimits[tenant] = limitConfig.RequestLimits.OverlayWith(defaultRequestLimits)
+		}
 	}
 
 	limiter := configRequestLimiter{
 		tenantLimits:        tenantRequestLimits,
 		cachedDefaultLimits: defaultRequestLimits,
 	}
-	limiter.limitsHit = promauto.With(reg).NewSummaryVec(
+	limiter.registerMetrics(reg)
+	return &limiter
+}
+
+func (l *configRequestLimiter) registerMetrics(reg prometheus.Registerer) {
+	l.limitsHit = promauto.With(reg).NewSummaryVec(
 		prometheus.SummaryOpts{
 			Namespace:  "thanos",
 			Subsystem:  "receive",
@@ -55,7 +63,7 @@ func newConfigRequestLimiter(reg prometheus.Registerer, writeLimits *writeLimits
 			Objectives: map[float64]float64{0.50: 0.1, 0.95: 0.1, 0.99: 0.001},
 		}, []string{"tenant", "limit"},
 	)
-	limiter.configuredLimits = promauto.With(reg).NewGaugeVec(
+	l.configuredLimits = promauto.With(reg).NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: "thanos",
 			Subsystem: "receive",
@@ -63,16 +71,14 @@ func newConfigRequestLimiter(reg prometheus.Registerer, writeLimits *writeLimits
 			Help:      "The configured write limits.",
 		}, []string{"tenant", "limit"},
 	)
-	for tenant, limits := range tenantRequestLimits {
-		limiter.configuredLimits.WithLabelValues(tenant, sizeBytesLimitName).Set(float64(*limits.SizeBytesLimit))
-		limiter.configuredLimits.WithLabelValues(tenant, seriesLimitName).Set(float64(*limits.SeriesLimit))
-		limiter.configuredLimits.WithLabelValues(tenant, samplesLimitName).Set(float64(*limits.SamplesLimit))
+	for tenant, limits := range l.tenantLimits {
+		l.configuredLimits.WithLabelValues(tenant, sizeBytesLimitName).Set(float64(*limits.SizeBytesLimit))
+		l.configuredLimits.WithLabelValues(tenant, seriesLimitName).Set(float64(*limits.SeriesLimit))
+		l.configuredLimits.WithLabelValues(tenant, samplesLimitName).Set(float64(*limits.SamplesLimit))
 	}
-	limiter.configuredLimits.WithLabelValues("", sizeBytesLimitName).Set(float64(*defaultRequestLimits.SizeBytesLimit))
-	limiter.configuredLimits.WithLabelValues("", seriesLimitName).Set(float64(*defaultRequestLimits.SeriesLimit))
-	limiter.configuredLimits.WithLabelValues("", samplesLimitName).Set(float64(*defaultRequestLimits.SamplesLimit))
-
-	return &limiter
+	l.configuredLimits.WithLabelValues("", sizeBytesLimitName).Set(float64(*l.cachedDefaultLimits.SizeBytesLimit))
+	l.configuredLimits.WithLabelValues("", seriesLimitName).Set(float64(*l.cachedDefaultLimits.SeriesLimit))
+	l.configuredLimits.WithLabelValues("", samplesLimitName).Set(float64(*l.cachedDefaultLimits.SamplesLimit))
 }
 
 func (l *configRequestLimiter) AllowSizeBytes(tenant string, contentLengthBytes int64) bool {
@@ -97,7 +103,7 @@ func (l *configRequestLimiter) AllowSeries(tenant string, amount int64) bool {
 	}
 
 	allowed := *limit >= amount
-	if !allowed {
+	if !allowed && l.limitsHit != nil {
 		l.limitsHit.
 			WithLabelValues(tenant, seriesLimitName).
 			Observe(float64(amount - *limit))
@@ -111,7 +117,7 @@ func (l *configRequestLimiter) AllowSamples(tenant string, amount int64) bool {
 		return true
 	}
 	allowed := *limit >= amount
-	if !allowed {
+	if !allowed && l.limitsHit != nil {
 		l.limitsHit.
 			WithLabelValues(tenant, samplesLimitName).
 			Observe(float64(amount - *limit))

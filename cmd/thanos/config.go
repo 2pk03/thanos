@@ -1,8 +1,9 @@
 // Copyright (c) The Thanos Authors.
 // Licensed under the Apache License 2.0.
 
-//nolint:unparam
 // TODO(kakkoyun): Fix linter issues - The pattern we use makes linter unhappy (returning unused config pointers).
+//
+//nolint:unparam
 package main
 
 import (
@@ -181,6 +182,7 @@ type queryConfig struct {
 	dnsSDInterval time.Duration
 	httpMethod    string
 	dnsSDResolver string
+	step          time.Duration
 }
 
 func (qc *queryConfig) registerFlag(cmd extkingpin.FlagClause) *queryConfig {
@@ -196,7 +198,9 @@ func (qc *queryConfig) registerFlag(cmd extkingpin.FlagClause) *queryConfig {
 	cmd.Flag("query.http-method", "HTTP method to use when sending queries. Possible options: [GET, POST]").
 		Default("POST").EnumVar(&qc.httpMethod, "GET", "POST")
 	cmd.Flag("query.sd-dns-resolver", "Resolver to use. Possible options: [golang, miekgdns]").
-		Default("golang").Hidden().StringVar(&qc.dnsSDResolver)
+		Default("miekgdns").Hidden().StringVar(&qc.dnsSDResolver)
+	cmd.Flag("query.default-step", "Default range query step to use. This is only used in stateless Ruler and alert state restoration.").
+		Default("1s").DurationVar(&qc.step)
 	return qc
 }
 
